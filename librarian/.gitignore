@@ -1,0 +1,39 @@
+# Rust build artifacts
+/target/
+**/target/
+/build/
+**/build/
+
+# Cargo lockfile (ignore for libraries; commit for apps)
+# Uncomment the next line if you do NOT want to commit Cargo.lock
+# Cargo.lock
+
+# Test and temporary files
+/tmp/
+**/tmp/
+/coverage/
+**/coverage/
+*.profraw
+
+# IDE/editor settings
+/.idea/
+**/.idea/
+/.vscode/
+**/.vscode/
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Vim/Emacs/other editor swap files
+*~
+*.swp
+*.swo
+*.swx
+
+# Logs
+*.log
+
+# Generated docs or distribution bundles (if any)
+/dist/
+**/dist/
