@@ -12,13 +12,20 @@ pub struct Page {
 }
 
 pub fn paginate(blocks: &[Block], size: Size) -> Vec<Page> {
-    // Greedy wrap: naive word wrapping for now
+    paginate_with_justify(blocks, size, false)
+}
+
+pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Vec<Page> {
+    // Greedy wrap with optional full justification
     let mut pages = Vec::new();
     let mut current = Page { lines: Vec::new() };
     for block in blocks {
         match block {
             Block::Paragraph(text) | Block::Quote(text) => {
-                for line in wrap_text(text, size.width as usize) {
+                let lines = wrap_text(text, size.width as usize);
+                for i in 0..lines.len() {
+                    let is_last = i == lines.len() - 1;
+                    let line = if justify && !is_last { justify_line(&lines[i], size.width as usize) } else { lines[i].clone() };
                     current.lines.push(line);
                     if current.lines.len() as u16 >= size.height {
                         pages.push(current.clone());
@@ -36,8 +43,11 @@ pub fn paginate(blocks: &[Block], size: Size) -> Vec<Page> {
             Block::List(items) => {
                 for item in items {
                     let line = format!("• {}", item);
-                    for w in wrap_text(&line, size.width as usize) {
-                        current.lines.push(w);
+                    let lines = wrap_text(&line, size.width as usize);
+                    for i in 0..lines.len() {
+                        let is_last = i == lines.len() - 1;
+                        let out = if justify && !is_last { justify_line(&lines[i], size.width as usize) } else { lines[i].clone() };
+                        current.lines.push(out);
                         if current.lines.len() as u16 >= size.height {
                             pages.push(current.clone());
                             current = Page { lines: Vec::new() };
@@ -81,5 +91,38 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
     if !line.is_empty() {
         out.push(line);
     }
+    out
+}
+
+fn justify_line(line: &str, width: usize) -> String {
+    // Do not justify single-word or already full/overfull lines
+    if !line.contains(' ') || line.len() >= width {
+        return line.to_string();
+    }
+    let words: Vec<&str> = line.split(' ').collect();
+    let gaps = words.len().saturating_sub(1);
+    if gaps == 0 { return line.to_string(); }
+
+    // Current length includes existing single spaces
+    let current_len = line.len();
+    let extra = width.saturating_sub(current_len);
+    if extra == 0 { return line.to_string(); }
+
+    // Build with extra spaces distributed across gaps; no trailing spaces
+    let mut out = String::with_capacity(width);
+    let base = extra / gaps;
+    let mut remainder = extra % gaps;
+    for (i, w) in words.iter().enumerate() {
+        out.push_str(w);
+        if i < gaps {
+            // one existing space + extra padding
+            out.push(' ');
+            for _ in 0..base { out.push(' '); }
+            if remainder > 0 { out.push(' '); remainder -= 1; }
+        }
+    }
+
+    // Clamp in case of any overshoot due to unicode width assumptions
+    if out.len() > width { out.truncate(width); }
     out
 }

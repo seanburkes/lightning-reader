@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone)]
 pub enum Block {
     Paragraph(String),
     Heading(String, u8),
