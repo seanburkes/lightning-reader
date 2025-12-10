@@ -17,6 +17,7 @@ The UI is powered by a native window (SDL/gtk/egui depending on configuration), 
 - **Navigation**: click through chapters in the sidebar or use the arrow keys (←/→) to move between pages.
 - **Search**: type in the search field and hit Enter to filter the current document.
 - **Settings**: open the preferences (gear icon) to tweak font size, theme, and pagination mode.
+- **Book layout**: press `b` to toggle a two-page spread view.
 
 ## Git hooks
 

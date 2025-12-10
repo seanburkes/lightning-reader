@@ -26,11 +26,14 @@ impl Default for Theme {
 use reader_core::layout::{Page, Size};
 use reader_core::types::Block as ReaderBlock;
 
+const SPREAD_GAP: u16 = 4;
+
 pub struct ReaderView {
     pub pages: Vec<Page>,
     pub current: usize,
     pub last_key: Option<String>,
     pub justify: bool,
+    pub two_pane: bool,
     pub chapter_starts: Vec<usize>,
     pub chapter_titles: Vec<String>,
     pub book_title: Option<String>,
@@ -51,6 +54,7 @@ impl ReaderView {
             current: 0,
             last_key: None,
             justify: false,
+            two_pane: false,
             chapter_starts: Vec::new(),
             chapter_titles: Vec::new(),
             book_title: None,
@@ -59,14 +63,26 @@ impl ReaderView {
         }
     }
 
-    pub fn inner_size(area: Rect, column_width: u16) -> Size {
+    pub fn inner_size(area: Rect, column_width: u16, two_pane: bool) -> Size {
         let vchunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(1)])
             .split(area);
         let content_area = vchunks[0];
-        let col_w = column_width.min(content_area.width);
-        let inner_w = col_w;
+        let col_w = if two_pane {
+            let total = column_width
+                .saturating_mul(2)
+                .saturating_add(SPREAD_GAP)
+                .min(content_area.width);
+            total
+        } else {
+            column_width.min(content_area.width)
+        };
+        let inner_w = if two_pane {
+            col_w.saturating_sub(SPREAD_GAP) / 2
+        } else {
+            col_w
+        };
         let inner_h = content_area.height.saturating_sub(2);
         Size {
             width: inner_w,
@@ -81,7 +97,15 @@ impl ReaderView {
             .split(area);
 
         let content_area = vchunks[0];
-        let col_w = column_width.min(content_area.width);
+        let col_w = if self.two_pane {
+            let total = column_width
+                .saturating_mul(2)
+                .saturating_add(SPREAD_GAP)
+                .min(content_area.width);
+            total
+        } else {
+            column_width.min(content_area.width)
+        };
         let left_pad = content_area.width.saturating_sub(col_w) / 2;
         let centered = Rect {
             x: content_area.x + left_pad,
@@ -90,11 +114,6 @@ impl ReaderView {
             height: content_area.height,
         };
 
-        let lines: Vec<Line> = if let Some(page) = self.pages.get(self.current) {
-            page.lines.iter().map(|l| Line::from(l.clone())).collect()
-        } else {
-            vec![Line::from("No content")]
-        };
         // Header/footer inside centered area
         let header_footer_chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -213,8 +232,32 @@ impl ReaderView {
 
         // Content
         let para_area = header_footer_chunks[1];
-        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-        f.render_widget(paragraph, para_area);
+        f.render_widget(Clear, para_area);
+        if self.two_pane && col_w > 6 {
+            let gap = SPREAD_GAP.min(col_w.saturating_sub(2));
+            let remaining = col_w.saturating_sub(gap);
+            let left_w = remaining / 2;
+            let right_w = remaining.saturating_sub(left_w);
+            let spreads = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Length(left_w),
+                    Constraint::Length(gap),
+                    Constraint::Length(right_w),
+                ])
+                .split(para_area);
+            let base = self.current.saturating_sub(self.current % 2);
+            let left_lines = self.page_lines(base);
+            let right_lines = self.page_lines(base + 1);
+            let left_p = Paragraph::new(left_lines).wrap(Wrap { trim: false });
+            let right_p = Paragraph::new(right_lines).wrap(Wrap { trim: false });
+            f.render_widget(left_p, spreads[0]);
+            f.render_widget(right_p, spreads[2]);
+        } else {
+            let lines = self.page_lines(self.current);
+            let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+            f.render_widget(paragraph, para_area);
+        }
 
         // Footer: powerline segments left author, right title
         let mut author = self.author.clone().unwrap_or_default();
@@ -297,12 +340,28 @@ impl ReaderView {
 
     pub fn up(&mut self, lines: usize) {
         let delta = lines.max(1);
-        self.current = self.current.saturating_sub(delta);
+        let step = if self.two_pane {
+            ((delta + 1) / 2) * 2
+        } else {
+            delta
+        };
+        self.current = self.current.saturating_sub(step);
+        if self.two_pane {
+            self.current = self.current.saturating_sub(self.current % 2);
+        }
     }
 
     pub fn down(&mut self, lines: usize) {
         let delta = lines.max(1);
-        self.current = (self.current + delta).min(self.pages.len().saturating_sub(1));
+        let step = if self.two_pane {
+            ((delta + 1) / 2) * 2
+        } else {
+            delta
+        };
+        self.current = (self.current + step).min(self.pages.len().saturating_sub(1));
+        if self.two_pane {
+            self.current = self.current.saturating_sub(self.current % 2);
+        }
     }
 
     pub fn reflow(&mut self, blocks: &[ReaderBlock], size: Size) {
@@ -310,5 +369,16 @@ impl ReaderView {
         self.pages = p.pages;
         self.chapter_starts = p.chapter_starts;
         self.current = self.current.min(self.pages.len().saturating_sub(1));
+        if self.two_pane {
+            self.current = self.current.saturating_sub(self.current % 2);
+        }
+    }
+
+    fn page_lines(&self, idx: usize) -> Vec<Line<'_>> {
+        if let Some(page) = self.pages.get(idx) {
+            page.lines.iter().map(|l| Line::from(l.clone())).collect()
+        } else {
+            vec![Line::from("")] // empty placeholder for missing spread page
+        }
     }
 }

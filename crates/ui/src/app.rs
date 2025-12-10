@@ -12,7 +12,7 @@ use std::{fs, io::stdout, path::PathBuf, time::Duration};
 
 use crate::reader_view::ReaderView;
 use crate::views::TocView;
-use reader_core::{layout::Size, types::Block as ReaderBlock};
+use reader_core::types::Block as ReaderBlock;
 
 pub enum Mode {
     Reader,
@@ -98,14 +98,14 @@ impl App {
         let mut height: u16 = 20;
         // Use inner size for initial paginate to compute chapter_starts correctly
         let term_size = terminal.size()?;
-        let inner = ReaderView::inner_size(term_size, width);
+        let inner = ReaderView::inner_size(term_size, width, view.two_pane);
         let p = reader_core::layout::paginate_with_justify(&self.blocks, inner, view.justify);
         view.pages = p.pages;
         view.chapter_starts = p.chapter_starts;
         if let Some(idx) = self.initial_page {
             view.current = idx.min(view.pages.len().saturating_sub(1));
         }
-        let mut last_size: (u16, u16) = (inner.width, inner.height);
+        let mut last_inner: (u16, u16) = (inner.width, inner.height);
         // ensure initial last_size is used by next draw comparison
 
         if !raw_ok {
@@ -113,7 +113,8 @@ impl App {
             let _ = terminal.draw(|f| {
                 let size = f.size();
                 height = size.height.saturating_sub(2);
-                view.reflow(&self.blocks, Size { width, height });
+                let inner = ReaderView::inner_size(size, width, view.two_pane);
+                view.reflow(&self.blocks, inner);
                 view.render(f, size, width);
             });
             execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -126,12 +127,12 @@ impl App {
                 let size = f.size();
                 height = size.height.saturating_sub(2);
                 // Respect configured column width; do not override with terminal width
-                if (width, height) != last_size {
-                    let inner = ReaderView::inner_size(size, width);
+                let inner = ReaderView::inner_size(size, width, view.two_pane);
+                if (inner.width, inner.height) != last_inner {
                     view.reflow(&self.blocks, inner);
                     // Clamp current page if needed
                     view.current = view.current.min(view.pages.len().saturating_sub(1));
-                    last_size = (inner.width, inner.height);
+                    last_inner = (inner.width, inner.height);
                 }
                 match self.mode {
                     Mode::Reader => {
@@ -154,6 +155,7 @@ impl App {
                         "h / l or arrows: adjust column width",
                         "t: toggle table of contents; Enter to jump; Esc to close TOC",
                         "J: toggle justification (persists)",
+                        "b: toggle two-page spread",
                         "?: toggle this help",
                     ];
                     let help = Paragraph::new(help_lines.join("\n"))
@@ -270,16 +272,26 @@ impl App {
                                 KeyCode::Char('h') | KeyCode::Left => {
                                     if let Mode::Reader = self.mode {
                                         width = width.saturating_sub(2);
-                                        let inner = ReaderView::inner_size(terminal.size()?, width);
+                                        let inner = ReaderView::inner_size(
+                                            terminal.size()?,
+                                            width,
+                                            view.two_pane,
+                                        );
                                         view.reflow(&self.blocks, inner);
+                                        last_inner = (inner.width, inner.height);
                                         view.last_key = Some("h/left".into());
                                     }
                                 }
                                 KeyCode::Char('l') | KeyCode::Right => {
                                     if let Mode::Reader = self.mode {
                                         width = width.saturating_add(2);
-                                        let inner = ReaderView::inner_size(terminal.size()?, width);
+                                        let inner = ReaderView::inner_size(
+                                            terminal.size()?,
+                                            width,
+                                            view.two_pane,
+                                        );
                                         view.reflow(&self.blocks, inner);
+                                        last_inner = (inner.width, inner.height);
                                         view.last_key = Some("l/right".into());
                                     }
                                 }
@@ -300,8 +312,38 @@ impl App {
                                         view.justify = !view.justify;
                                         save_justify_setting(view.justify);
                                         view.last_key = Some("J toggle".into());
-                                        let inner = ReaderView::inner_size(terminal.size()?, width);
+                                        let inner = ReaderView::inner_size(
+                                            terminal.size()?,
+                                            width,
+                                            view.two_pane,
+                                        );
                                         view.reflow(&self.blocks, inner);
+                                        last_inner = (inner.width, inner.height);
+                                    }
+                                }
+                                KeyCode::Char('b') => {
+                                    if let Mode::Reader = self.mode {
+                                        view.two_pane = !view.two_pane;
+                                        // Align to left page when entering spread mode
+                                        if view.two_pane {
+                                            view.current =
+                                                view.current.saturating_sub(view.current % 2);
+                                        }
+                                        let inner = ReaderView::inner_size(
+                                            terminal.size()?,
+                                            width,
+                                            view.two_pane,
+                                        );
+                                        view.reflow(&self.blocks, inner);
+                                        last_inner = (inner.width, inner.height);
+                                        view.last_key = Some(
+                                            if view.two_pane {
+                                                "b spread on"
+                                            } else {
+                                                "b spread off"
+                                            }
+                                            .into(),
+                                        );
                                     }
                                 }
                                 KeyCode::Char('?') => {
