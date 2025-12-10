@@ -4,12 +4,15 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use dirs::config_dir;
-use ratatui::prelude::*;
+use ratatui::{
+    prelude::*,
+    widgets::{Block as UiBlock, Borders, Clear, Paragraph, Wrap},
+};
 use std::{fs, io::stdout, path::PathBuf, time::Duration};
 
 use crate::reader_view::ReaderView;
 use crate::views::TocView;
-use reader_core::{layout::Size, types::Block};
+use reader_core::{layout::Size, types::Block as ReaderBlock};
 
 pub enum Mode {
     Reader,
@@ -17,7 +20,7 @@ pub enum Mode {
 }
 
 pub struct App {
-    pub blocks: Vec<Block>,
+    pub blocks: Vec<ReaderBlock>,
     pub initial_page: Option<usize>,
     pub mode: Mode,
     pub toc: Option<TocView>,
@@ -25,6 +28,7 @@ pub struct App {
     pub book_title: Option<String>,
     pub author: Option<String>,
     pub theme: crate::reader_view::Theme,
+    pub show_help: bool,
 }
 
 impl Default for App {
@@ -44,9 +48,10 @@ impl App {
             book_title: None,
             author: None,
             theme: crate::reader_view::Theme::default(),
+            show_help: false,
         }
     }
-    pub fn new_with_blocks(blocks: Vec<Block>) -> Self {
+    pub fn new_with_blocks(blocks: Vec<ReaderBlock>) -> Self {
         Self {
             blocks,
             initial_page: None,
@@ -56,10 +61,11 @@ impl App {
             book_title: None,
             author: None,
             theme: crate::reader_view::Theme::default(),
+            show_help: false,
         }
     }
     pub fn new_with_blocks_at(
-        blocks: Vec<Block>,
+        blocks: Vec<ReaderBlock>,
         initial_page: usize,
         chapter_titles: Vec<String>,
     ) -> Self {
@@ -72,6 +78,7 @@ impl App {
             book_title: None,
             author: None,
             theme: crate::reader_view::Theme::default(),
+            show_help: false,
         }
     }
 
@@ -138,12 +145,42 @@ impl App {
                         }
                     }
                 }
+                if self.show_help {
+                    let popup_area = centered_rect(70, 70, size);
+                    let help_lines = vec![
+                        "q / Ctrl-C: quit",
+                        "j / k or arrows: scroll lines",
+                        "PageUp / PageDown: jump half-page",
+                        "h / l or arrows: adjust column width",
+                        "t: toggle table of contents; Enter to jump; Esc to close TOC",
+                        "J: toggle justification (persists)",
+                        "?: toggle this help",
+                    ];
+                    let help = Paragraph::new(help_lines.join("\n"))
+                        .block(
+                            UiBlock::default()
+                                .title("Help (Esc or ? to close)")
+                                .borders(Borders::ALL),
+                        )
+                        .wrap(Wrap { trim: false });
+                    f.render_widget(Clear, popup_area);
+                    f.render_widget(help, popup_area);
+                }
             })?;
 
             match event::poll(Duration::from_millis(100)) {
                 Ok(true) => {
                     match event::read() {
                         Ok(Event::Key(key)) => {
+                            if self.show_help {
+                                match key.code {
+                                    KeyCode::Esc | KeyCode::Char('?') => {
+                                        self.show_help = false;
+                                    }
+                                    _ => {}
+                                }
+                                continue;
+                            }
                             match key.code {
                                 KeyCode::Char('q') => exit = true,
                                 KeyCode::Esc => {
@@ -267,6 +304,9 @@ impl App {
                                         view.reflow(&self.blocks, inner);
                                     }
                                 }
+                                KeyCode::Char('?') => {
+                                    self.show_help = !self.show_help;
+                                }
 
                                 _ => {}
                             }
@@ -292,6 +332,26 @@ impl App {
 
 fn settings_path() -> Option<PathBuf> {
     config_dir().map(|dir| dir.join("lightning-librarian").join("settings.toml"))
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+    let horizontal = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(vertical[1]);
+    horizontal[1]
 }
 
 fn load_justify_setting() -> bool {
