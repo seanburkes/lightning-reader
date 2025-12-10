@@ -90,7 +90,9 @@ impl App {
         let mut terminal = Terminal::new(backend)?;
 
         let mut view = ReaderView::new();
-        view.justify = load_justify_setting();
+        let (saved_justify, saved_two_pane) = load_settings();
+        view.justify = saved_justify;
+        view.two_pane = saved_two_pane;
         view.book_title = self.book_title.clone();
         view.author = self.author.clone();
         view.theme = self.theme.clone();
@@ -155,7 +157,7 @@ impl App {
                         "h / l or arrows: adjust column width",
                         "t: toggle table of contents; Enter to jump; Esc to close TOC",
                         "J: toggle justification (persists)",
-                        "b: toggle two-page spread",
+                        "b: toggle two-page spread (persists)",
                         "?: toggle this help",
                     ];
                     let help = Paragraph::new(help_lines.join("\n"))
@@ -310,7 +312,7 @@ impl App {
                                 KeyCode::Char('J') => {
                                     if let Mode::Reader = self.mode {
                                         view.justify = !view.justify;
-                                        save_justify_setting(view.justify);
+                                        save_settings(view.justify, view.two_pane);
                                         view.last_key = Some("J toggle".into());
                                         let inner = ReaderView::inner_size(
                                             terminal.size()?,
@@ -329,6 +331,7 @@ impl App {
                                             view.current =
                                                 view.current.saturating_sub(view.current % 2);
                                         }
+                                        save_settings(view.justify, view.two_pane);
                                         let inner = ReaderView::inner_size(
                                             terminal.size()?,
                                             width,
@@ -396,24 +399,28 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
     horizontal[1]
 }
 
-fn load_justify_setting() -> bool {
+fn load_settings() -> (bool, bool) {
+    let mut justify = false;
+    let mut two_pane = false;
     if let Some(path) = settings_path() {
         if let Ok(contents) = fs::read_to_string(path) {
             for line in contents.lines() {
                 if let Some(val) = line.strip_prefix("justify=") {
-                    return val.trim().eq_ignore_ascii_case("true");
+                    justify = val.trim().eq_ignore_ascii_case("true");
+                } else if let Some(val) = line.strip_prefix("two_pane=") {
+                    two_pane = val.trim().eq_ignore_ascii_case("true");
                 }
             }
         }
     }
-    false
+    (justify, two_pane)
 }
 
-fn save_justify_setting(justify: bool) {
+fn save_settings(justify: bool, two_pane: bool) {
     if let Some(path) = settings_path() {
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        let _ = fs::write(path, format!("justify={justify}\n"));
+        let _ = fs::write(path, format!("justify={justify}\ntwo_pane={two_pane}\n"));
     }
 }
