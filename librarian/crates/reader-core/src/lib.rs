@@ -1,6 +1,7 @@
 pub mod epub;
-pub mod normalize;
 pub mod layout;
+pub mod nav;
+pub mod normalize;
 pub mod types;
 
 pub mod state;

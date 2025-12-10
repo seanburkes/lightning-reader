@@ -1,20 +1,77 @@
-use crossterm::{event::{self, Event, KeyCode}, execute, terminal::{EnterAlternateScreen, LeaveAlternateScreen, enable_raw_mode, disable_raw_mode}};
-use ratatui::{prelude::*, widgets::*};
+use crossterm::{
+    event::{self, Event, KeyCode},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use ratatui::prelude::*;
 use std::{io::stdout, time::Duration};
 
 use crate::reader_view::ReaderView;
+use crate::views::TocView;
 use reader_core::{layout::Size, types::Block};
 
+pub enum Mode {
+    Reader,
+    Toc,
+}
+
 pub struct App {
-    blocks: Vec<Block>,
-    initial_page: Option<usize>,
+    pub blocks: Vec<Block>,
+    pub initial_page: Option<usize>,
+    pub mode: Mode,
+    pub toc: Option<TocView>,
+    pub chapter_titles: Vec<String>,
+    pub book_title: Option<String>,
+    pub author: Option<String>,
+    pub theme: crate::reader_view::Theme,
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl App {
-    pub fn new() -> Self { Self { blocks: Vec::new(), initial_page: None } }
-    pub fn new_with_blocks(blocks: Vec<Block>) -> Self { Self { blocks, initial_page: None } }
-    pub fn new_with_blocks_at(blocks: Vec<Block>, initial_page: usize) -> Self {
-        Self { blocks, initial_page: Some(initial_page) }
+    pub fn new() -> Self {
+        Self {
+            blocks: Vec::new(),
+            initial_page: None,
+            mode: Mode::Reader,
+            toc: None,
+            chapter_titles: Vec::new(),
+            book_title: None,
+            author: None,
+            theme: crate::reader_view::Theme::default(),
+        }
+    }
+    pub fn new_with_blocks(blocks: Vec<Block>) -> Self {
+        Self {
+            blocks,
+            initial_page: None,
+            mode: Mode::Reader,
+            toc: None,
+            chapter_titles: Vec::new(),
+            book_title: None,
+            author: None,
+            theme: crate::reader_view::Theme::default(),
+        }
+    }
+    pub fn new_with_blocks_at(
+        blocks: Vec<Block>,
+        initial_page: usize,
+        chapter_titles: Vec<String>,
+    ) -> Self {
+        Self {
+            blocks,
+            initial_page: Some(initial_page),
+            mode: Mode::Reader,
+            toc: None,
+            chapter_titles,
+            book_title: None,
+            author: None,
+            theme: crate::reader_view::Theme::default(),
+        }
     }
 
     pub fn run(mut self) -> std::io::Result<usize> {
@@ -25,15 +82,22 @@ impl App {
         let mut terminal = Terminal::new(backend)?;
 
         let mut view = ReaderView::new();
-        // If initial page set via env or state, we could pass it
+        view.book_title = self.book_title.clone();
+        view.author = self.author.clone();
+        view.theme = self.theme.clone();
         let mut width: u16 = 60;
         let mut height: u16 = 20;
-        let mut last_size: (u16, u16) = (0, 0);
-        view.pages = reader_core::layout::paginate_with_justify(&self.blocks, Size { width, height }, view.justify);
+        // Use inner size for initial paginate to compute chapter_starts correctly
+        let term_size = terminal.size()?;
+        let inner = ReaderView::inner_size(term_size, width);
+        let p = reader_core::layout::paginate_with_justify(&self.blocks, inner, view.justify);
+        view.pages = p.pages;
+        view.chapter_starts = p.chapter_starts;
         if let Some(idx) = self.initial_page {
             view.current = idx.min(view.pages.len().saturating_sub(1));
         }
-        last_size = (width, height);
+        let mut last_size: (u16, u16) = (inner.width, inner.height);
+        // ensure initial last_size is used by next draw comparison
 
         if !raw_ok {
             // Non-interactive fallback: draw once and exit cleanly
@@ -60,9 +124,19 @@ impl App {
                     view.current = view.current.min(view.pages.len().saturating_sub(1));
                     last_size = (inner.width, inner.height);
                 }
-                view.render(f, size, width);
+                match self.mode {
+                    Mode::Reader => {
+                        view.render(f, size, width);
+                    }
+                    Mode::Toc => {
+                        if let Some(t) = &self.toc {
+                            t.render(f, size, width);
+                        } else {
+                            view.render(f, size, width);
+                        }
+                    }
+                }
             })?;
-
 
             match event::poll(Duration::from_millis(100)) {
                 Ok(true) => {
@@ -70,23 +144,140 @@ impl App {
                         Ok(Event::Key(key)) => {
                             match key.code {
                                 KeyCode::Char('q') => exit = true,
-                                KeyCode::Char('c') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => exit = true,
-                                KeyCode::Char('j') | KeyCode::Down => { view.down(1); view.last_key = Some("j/down".into()); },
-                                KeyCode::Char('k') | KeyCode::Up => { view.up(1); view.last_key = Some("k/up".into()); },
-                                KeyCode::Char('h') | KeyCode::Left => { width = width.saturating_sub(2); let inner = ReaderView::inner_size(terminal.size()?, width); view.reflow(&self.blocks, inner); view.last_key = Some("h/left".into()); },
-                                KeyCode::Char('l') | KeyCode::Right => { width = width.saturating_add(2); let inner = ReaderView::inner_size(terminal.size()?, width); view.reflow(&self.blocks, inner); view.last_key = Some("l/right".into()); },
-                                KeyCode::PageDown => { view.down((height/2) as usize); view.last_key = Some("PgDn".into()); },
-                                KeyCode::PageUp => { view.up((height/2) as usize); view.last_key = Some("PgUp".into()); },
-                                KeyCode::Char('J') => { view.justify = !view.justify; view.last_key = Some("J toggle".into()); let inner = ReaderView::inner_size(terminal.size()?, width); view.reflow(&self.blocks, inner); },
+                                KeyCode::Esc => {
+                                    if let Mode::Toc = self.mode {
+                                        self.mode = Mode::Reader;
+                                    }
+                                }
+                                KeyCode::Enter => {
+                                    if let Mode::Toc = self.mode {
+                                        if let Some(t) = &self.toc {
+                                            // Jump: set view.current to chapter start page index
+                                            if let Some(pidx) =
+                                                view.chapter_starts.get(t.selected).cloned()
+                                            {
+                                                view.current =
+                                                    pidx.min(view.pages.len().saturating_sub(1));
+                                            }
+                                            self.mode = Mode::Reader;
+                                        }
+                                    }
+                                }
+                                KeyCode::Char('t') => {
+                                    // Build TOC items from chapter_starts; show indices for now.
+                                    // If empty, still open with a single "Start" entry
+                                    let items: Vec<String> = if view.chapter_starts.is_empty() {
+                                        vec!["Start".to_string()]
+                                    } else {
+                                        view.chapter_starts
+                                            .iter()
+                                            .enumerate()
+                                            .map(|(i, pidx)| {
+                                                let title = self
+                                                    .chapter_titles
+                                                    .get(i)
+                                                    .cloned()
+                                                    .unwrap_or_else(|| {
+                                                        format!("Chapter {}", i + 1)
+                                                    });
+                                                format!("{}  (page {})", title, pidx + 1)
+                                            })
+                                            .collect()
+                                    };
+                                    let mut toc = TocView::new(items);
+                                    // Default selection = current chapter (last start <= current page)
+                                    if let Some(idx) =
+                                        view.chapter_starts.iter().rposition(|&p| p <= view.current)
+                                    {
+                                        toc.selected = idx;
+                                    } else if !view.chapter_starts.is_empty() {
+                                        // If current is before first start, select the first
+                                        toc.selected = 0;
+                                    }
+                                    self.toc = Some(toc);
+                                    self.mode = Mode::Toc;
+                                }
+
+                                KeyCode::Char('c')
+                                    if key
+                                        .modifiers
+                                        .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                                {
+                                    exit = true
+                                }
+                                KeyCode::Char('j') | KeyCode::Down => match self.mode {
+                                    Mode::Reader => {
+                                        view.down(1);
+                                        view.last_key = Some("j/down".into());
+                                    }
+                                    Mode::Toc => {
+                                        if let Some(t) = &mut self.toc {
+                                            t.down();
+                                        }
+                                    }
+                                },
+                                KeyCode::Char('k') | KeyCode::Up => match self.mode {
+                                    Mode::Reader => {
+                                        view.up(1);
+                                        view.last_key = Some("k/up".into());
+                                    }
+                                    Mode::Toc => {
+                                        if let Some(t) = &mut self.toc {
+                                            t.up();
+                                        }
+                                    }
+                                },
+
+                                KeyCode::Char('h') | KeyCode::Left => {
+                                    if let Mode::Reader = self.mode {
+                                        width = width.saturating_sub(2);
+                                        let inner = ReaderView::inner_size(terminal.size()?, width);
+                                        view.reflow(&self.blocks, inner);
+                                        view.last_key = Some("h/left".into());
+                                    }
+                                }
+                                KeyCode::Char('l') | KeyCode::Right => {
+                                    if let Mode::Reader = self.mode {
+                                        width = width.saturating_add(2);
+                                        let inner = ReaderView::inner_size(terminal.size()?, width);
+                                        view.reflow(&self.blocks, inner);
+                                        view.last_key = Some("l/right".into());
+                                    }
+                                }
+                                KeyCode::PageDown => {
+                                    if let Mode::Reader = self.mode {
+                                        view.down((height / 2) as usize);
+                                        view.last_key = Some("PgDn".into());
+                                    }
+                                }
+                                KeyCode::PageUp => {
+                                    if let Mode::Reader = self.mode {
+                                        view.up((height / 2) as usize);
+                                        view.last_key = Some("PgUp".into());
+                                    }
+                                }
+                                KeyCode::Char('J') => {
+                                    if let Mode::Reader = self.mode {
+                                        view.justify = !view.justify;
+                                        view.last_key = Some("J toggle".into());
+                                        let inner = ReaderView::inner_size(terminal.size()?, width);
+                                        view.reflow(&self.blocks, inner);
+                                    }
+                                }
+
                                 _ => {}
                             }
                         }
                         Ok(_) => {}
-                        Err(_) => { exit = true; }
+                        Err(_) => {
+                            exit = true;
+                        }
                     }
                 }
                 Ok(false) => {}
-                Err(_) => { exit = true; }
+                Err(_) => {
+                    exit = true;
+                }
             }
         }
 

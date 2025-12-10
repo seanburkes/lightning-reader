@@ -30,6 +30,7 @@
   - Greedy wrap with unicode line breaks; adjustable column width
   - Single pane render; vi navigation (h/j/k/l, gg/G, / stub)
   - TOC view; bookmarks; status bar with progress
+  - Powerline-style header/footer bars inside reader area (width-fit)
 - M2: Dual-pane sequential pages
   - Two synchronized panes; resize-aware reflow; layout cache
 - M3: Code experience
@@ -49,6 +50,7 @@
 - Footnotes/endnotes as links/popup
 - Lazy parse/render per chapter; cache layouts by width; debounce resize
 - OSC 52 primary; explicit copy command; fallbacks for terminal variability
+- Headers/footers rendered inside content area to avoid overflow; left/right segments with truncation and padding to fit exactly
 
 ## Testing Strategy
 - Unit: HTML normalization; wrap/hyphenation

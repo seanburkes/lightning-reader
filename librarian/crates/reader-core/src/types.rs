@@ -11,8 +11,8 @@ pub enum Block {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BookId {
-    pub id: String,      // sha256 or dc:identifier
-    pub path: String,    // absolute path
+    pub id: String,   // sha256 or dc:identifier
+    pub path: String, // absolute path
     pub title: Option<String>,
 }
 

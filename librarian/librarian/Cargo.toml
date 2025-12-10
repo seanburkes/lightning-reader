@@ -6,3 +6,6 @@ edition = "2021"
 [dependencies]
 reader-core = { path = "../crates/reader-core" }
 ui = { path = "../crates/ui" }
+toml = "0.8"
+directories = "5.0"
+ratatui = "0.26"

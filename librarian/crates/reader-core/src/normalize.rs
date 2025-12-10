@@ -45,10 +45,14 @@ pub fn html_to_blocks(html: &str) -> Vec<Block> {
             if let Ok(li_iter) = node.as_node().select("li") {
                 for li in li_iter {
                     let text = li.text_contents().trim().to_string();
-                    if !text.is_empty() { items.push(text); }
+                    if !text.is_empty() {
+                        items.push(text);
+                    }
                 }
             }
-            if !items.is_empty() { blocks.push(Block::List(items)); }
+            if !items.is_empty() {
+                blocks.push(Block::List(items));
+            }
         }
     }
 
@@ -87,21 +91,20 @@ pub fn postprocess_blocks(mut blocks: Vec<Block>) -> Vec<Block> {
         let s = s.replace('\r', " ");
         // Strip zero-width/invisible separators
         let s = s
-            .replace('\u{200B}', "") // zero width space
-            .replace('\u{200C}', "") // zero width non-joiner
-            .replace('\u{200D}', "") // zero width joiner
-            .replace('\u{200E}', "") // LRM
-            .replace('\u{200F}', ""
-            ) // RLM
-            .replace('\u{2028}', " ") // line separator -> space
-            .replace('\u{2029}', " ") // paragraph separator -> space
-            .replace('\u{FEFF}', ""); // BOM
+            .replace(
+                ['\u{200B}', '\u{200C}', '\u{200D}', '\u{200E}', '\u{200F}'],
+                "",
+            )
+            .replace(['\u{2028}', '\u{2029}'], " ")
+            .replace('\u{FEFF}', "");
         // Collapse whitespace to single spaces
         let mut out = String::with_capacity(s.len());
         let mut last_space = false;
         for ch in s.chars() {
             if ch.is_whitespace() {
-                if !last_space { out.push(' '); }
+                if !last_space {
+                    out.push(' ');
+                }
                 last_space = true;
             } else {
                 out.push(ch);
@@ -136,14 +139,21 @@ pub fn postprocess_blocks(mut blocks: Vec<Block>) -> Vec<Block> {
         // Conservative de-hyphenation across soft line joins: "word- next" => "wordnext" if next starts lowercase
         fn dehyphenate(input: &str) -> String {
             let tokens: Vec<&str> = input.split(' ').collect();
-            if tokens.len() < 2 { return input.to_string(); }
+            if tokens.len() < 2 {
+                return input.to_string();
+            }
             let mut out: Vec<String> = Vec::with_capacity(tokens.len());
             let mut i = 0;
             while i < tokens.len() {
                 let tok = tokens[i];
                 if tok.ends_with('-') && i + 1 < tokens.len() {
                     let next = tokens[i + 1];
-                    if next.chars().next().map(|c| c.is_lowercase()).unwrap_or(false) {
+                    if next
+                        .chars()
+                        .next()
+                        .map(|c| c.is_lowercase())
+                        .unwrap_or(false)
+                    {
                         // Join and skip next
                         let mut joined = tok.trim_end_matches('-').to_string();
                         joined.push_str(next);
@@ -173,4 +183,3 @@ pub fn postprocess_blocks(mut blocks: Vec<Block>) -> Vec<Block> {
     // Removed paragraph merging: respect <p> boundaries strictly
     blocks
 }
-

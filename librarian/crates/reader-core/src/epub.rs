@@ -1,14 +1,21 @@
-use thiserror::Error;
-use std::{fs::File, io::Read, path::{Path, PathBuf}};
 use quick_xml::events::Event;
 use quick_xml::Reader as XmlReader;
+use std::{
+    fs::File,
+    io::Read,
+    path::{Path, PathBuf},
+};
+use thiserror::Error;
 use zip::ZipArchive;
 
 #[derive(Debug, Error)]
 pub enum ReaderError {
-    #[error("IO error: {0}")] Io(#[from] std::io::Error),
-    #[error("Zip error: {0}")] Zip(#[from] zip::result::ZipError),
-    #[error("Parse error: {0}")] Parse(String),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("Zip error: {0}")]
+    Zip(#[from] zip::result::ZipError),
+    #[error("Parse error: {0}")]
+    Parse(String),
 }
 
 #[derive(Debug, Clone)]
@@ -20,6 +27,7 @@ pub struct SpineItem {
 
 pub struct EpubBook {
     pub title: Option<String>,
+    pub author: Option<String>,
     pub spine: Vec<SpineItem>,
     rootfile: PathBuf,
     zip_path: PathBuf,
@@ -39,7 +47,9 @@ fn read_container(zip: &mut ZipArchive<File>) -> Result<PathBuf, ReaderError> {
                     for a in e.attributes().flatten() {
                         let key = String::from_utf8_lossy(a.key.as_ref());
                         if key.contains("full-path") {
-                            let val = a.unescape_value().map_err(|e| ReaderError::Parse(e.to_string()))?;
+                            let val = a
+                                .unescape_value()
+                                .map_err(|e| ReaderError::Parse(e.to_string()))?;
                             rootfile_path = Some(val.into_owned());
                         }
                     }
@@ -54,7 +64,16 @@ fn read_container(zip: &mut ZipArchive<File>) -> Result<PathBuf, ReaderError> {
     Ok(PathBuf::from(root))
 }
 
-fn read_opf(zip: &mut ZipArchive<File>, opf_path: &Path) -> Result<(Option<String>, Vec<(String,String,Option<String>)>, Vec<String>), ReaderError> {
+type ManifestEntry = (String, String, Option<String>);
+
+type OpfResult = (
+    Option<String>,
+    Vec<ManifestEntry>,
+    Vec<String>,
+    Option<String>,
+);
+
+fn read_opf(zip: &mut ZipArchive<File>, opf_path: &Path) -> Result<OpfResult, ReaderError> {
     let mut opf = zip.by_name(opf_path.to_string_lossy().as_ref())?;
     let mut opf_xml = String::new();
     opf.read_to_string(&mut opf_xml)?;
@@ -62,6 +81,7 @@ fn read_opf(zip: &mut ZipArchive<File>, opf_path: &Path) -> Result<(Option<Strin
     let mut manifest: Vec<(String, String, Option<String>)> = Vec::new();
     let mut spine_ids: Vec<String> = Vec::new();
     let mut title: Option<String> = None;
+    let mut author: Option<String> = None;
     loop {
         match reader.read_event() {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
@@ -72,24 +92,43 @@ fn read_opf(zip: &mut ZipArchive<File>, opf_path: &Path) -> Result<(Option<Strin
                     let mut media: Option<String> = None;
                     for a in e.attributes().flatten() {
                         let key = String::from_utf8_lossy(a.key.as_ref());
-                        let val = a.unescape_value().map_err(|e| ReaderError::Parse(e.to_string()))?;
+                        let val = a
+                            .unescape_value()
+                            .map_err(|e| ReaderError::Parse(e.to_string()))?;
                         let sval = val.into_owned();
-                        if key.ends_with("id") { id = sval.clone(); }
-                        if key.ends_with("href") { href = sval.clone(); }
-                        if key.ends_with("media-type") { media = Some(sval); }
+                        if key.ends_with("id") {
+                            id = sval.clone();
+                        }
+                        if key.ends_with("href") {
+                            href = sval.clone();
+                        }
+                        if key.ends_with("media-type") {
+                            media = Some(sval);
+                        }
                     }
-                    if !id.is_empty() && !href.is_empty() { manifest.push((id, href, media)); }
+                    if !id.is_empty() && !href.is_empty() {
+                        manifest.push((id, href, media));
+                    }
                 } else if name.ends_with("itemref") {
                     for a in e.attributes().flatten() {
                         let key = String::from_utf8_lossy(a.key.as_ref());
-                        let val = a.unescape_value().map_err(|e| ReaderError::Parse(e.to_string()))?;
+                        let val = a
+                            .unescape_value()
+                            .map_err(|e| ReaderError::Parse(e.to_string()))?;
                         let sval = val.into_owned();
-                        if key.ends_with("idref") { spine_ids.push(sval); }
+                        if key.ends_with("idref") {
+                            spine_ids.push(sval);
+                        }
                     }
                 } else if name.ends_with("title") {
                     if let Ok(Event::Text(t)) = reader.read_event() {
                         let s = String::from_utf8_lossy(t.as_ref()).to_string();
                         title = Some(s);
+                    }
+                } else if name.ends_with("creator") || name.ends_with("author") {
+                    if let Ok(Event::Text(t)) = reader.read_event() {
+                        let s = String::from_utf8_lossy(t.as_ref()).to_string();
+                        author = Some(s);
                     }
                 }
             }
@@ -98,7 +137,7 @@ fn read_opf(zip: &mut ZipArchive<File>, opf_path: &Path) -> Result<(Option<Strin
             _ => {}
         }
     }
-    Ok((title, manifest, spine_ids))
+    Ok((title, manifest, spine_ids, author))
 }
 
 impl EpubBook {
@@ -106,14 +145,36 @@ impl EpubBook {
         let file = std::fs::File::open(path)?;
         let mut zip = ZipArchive::new(file)?;
         let rootfile = read_container(&mut zip)?;
-        let (title, manifest, spine_ids) = read_opf(&mut zip, &rootfile)?;
-        let spine = spine_ids.into_iter().filter_map(|idref| {
-            manifest.iter().find(|(id, _, _)| *id == idref).map(|(_, href, media)| SpineItem { id: idref.clone(), href: href.clone(), media_type: media.clone() })
-        }).collect();
-        Ok(Self { title, spine, rootfile, zip_path: path.to_path_buf() })
+        let (title, manifest, spine_ids, author) = read_opf(&mut zip, &rootfile)?;
+        let spine = spine_ids
+            .into_iter()
+            .filter_map(|idref| {
+                manifest
+                    .iter()
+                    .find(|(id, _, _)| *id == idref)
+                    .map(|(_, href, media)| SpineItem {
+                        id: idref.clone(),
+                        href: href.clone(),
+                        media_type: media.clone(),
+                    })
+            })
+            .collect();
+        Ok(Self {
+            title,
+            author,
+            spine,
+            rootfile,
+            zip_path: path.to_path_buf(),
+        })
     }
 
-    pub fn spine(&self) -> &[SpineItem] { &self.spine }
+    pub fn spine(&self) -> &[SpineItem] {
+        &self.spine
+    }
+
+    pub fn toc_labels(&self) -> Result<std::collections::HashMap<String, String>, ReaderError> {
+        crate::nav::read_nav_labels(&self.zip_path, &self.rootfile)
+    }
 
     pub fn load_chapter(&self, item: &SpineItem) -> Result<String, ReaderError> {
         // Chapter path relative to OPF base
@@ -128,4 +189,3 @@ impl EpubBook {
         Ok(s)
     }
 }
-
