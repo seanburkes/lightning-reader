@@ -3,8 +3,9 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use dirs::config_dir;
 use ratatui::prelude::*;
-use std::{io::stdout, time::Duration};
+use std::{fs, io::stdout, path::PathBuf, time::Duration};
 
 use crate::reader_view::ReaderView;
 use crate::views::TocView;
@@ -82,6 +83,7 @@ impl App {
         let mut terminal = Terminal::new(backend)?;
 
         let mut view = ReaderView::new();
+        view.justify = load_justify_setting();
         view.book_title = self.book_title.clone();
         view.author = self.author.clone();
         view.theme = self.theme.clone();
@@ -259,6 +261,7 @@ impl App {
                                 KeyCode::Char('J') => {
                                     if let Mode::Reader = self.mode {
                                         view.justify = !view.justify;
+                                        save_justify_setting(view.justify);
                                         view.last_key = Some("J toggle".into());
                                         let inner = ReaderView::inner_size(terminal.size()?, width);
                                         view.reflow(&self.blocks, inner);
@@ -284,5 +287,31 @@ impl App {
         disable_raw_mode()?;
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
         Ok(view.current)
+    }
+}
+
+fn settings_path() -> Option<PathBuf> {
+    config_dir().map(|dir| dir.join("lightning-librarian").join("settings.toml"))
+}
+
+fn load_justify_setting() -> bool {
+    if let Some(path) = settings_path() {
+        if let Ok(contents) = fs::read_to_string(path) {
+            for line in contents.lines() {
+                if let Some(val) = line.strip_prefix("justify=") {
+                    return val.trim().eq_ignore_ascii_case("true");
+                }
+            }
+        }
+    }
+    false
+}
+
+fn save_justify_setting(justify: bool) {
+    if let Some(path) = settings_path() {
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::write(path, format!("justify={justify}\n"));
     }
 }
