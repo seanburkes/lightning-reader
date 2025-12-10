@@ -1,0 +1,8 @@
+[workspace]
+members = [
+  "librarian",
+  "crates/reader-core",
+  "crates/ui",
+  "crates/highlight"
+]
+resolver = "2"
