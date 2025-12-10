@@ -66,8 +66,8 @@ impl ReaderView {
             .split(area);
         let content_area = vchunks[0];
         let col_w = column_width.min(content_area.width);
-        let inner_w = col_w.saturating_sub(2); // borders left/right
-        let inner_h = content_area.height.saturating_sub(2); // borders top/bottom
+        let inner_w = col_w;
+        let inner_h = content_area.height.saturating_sub(2);
         Size {
             width: inner_w,
             height: inner_h,
@@ -104,6 +104,7 @@ impl ReaderView {
                 Constraint::Length(1),
             ])
             .split(centered);
+        let body_width = header_footer_chunks[1].width as usize;
 
         // Header: chapter title (left) | page X/Y (right)
         let total = self.pages.len();
@@ -123,7 +124,7 @@ impl ReaderView {
         // Build powerline-style header segments: left chapter, right page
         let mut left = chapter_label;
         let mut right = format!("Pg {}/{}", current, total);
-        let total_width = header_footer_chunks[0].width as usize;
+        let total_width = body_width;
         // Reserve one space padding around segments if present
         let mut header_line = Line::default();
         // Truncate with priority to keep right visible
@@ -191,16 +192,7 @@ impl ReaderView {
             }
         }
         // Middle pad before right segment
-        let pad = total_width.saturating_sub(
-            left_seg_len
-                + sep
-                + right_seg_len
-                + if left_seg_len > 0 && right_seg_len > 0 {
-                    1
-                } else {
-                    0
-                },
-        );
+        let pad = total_width.saturating_sub(left_seg_len + sep + right_seg_len);
         if pad > 0 {
             header_line.push_span(Span::styled(
                 " ".repeat(pad),
@@ -221,15 +213,13 @@ impl ReaderView {
 
         // Content
         let para_area = header_footer_chunks[1];
-        let paragraph = Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .block(ratatui::widgets::Block::default().borders(Borders::ALL));
+        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
         f.render_widget(paragraph, para_area);
 
         // Footer: powerline segments left author, right title
         let mut author = self.author.clone().unwrap_or_default();
         let mut title = self.book_title.clone().unwrap_or_default();
-        let total_width = header_footer_chunks[2].width as usize;
+        let total_width = body_width;
         let mut footer_line = Line::default();
         let mut left_seg_len = author.graphemes(true).count();
         let mut right_seg_len = title.graphemes(true).count();
@@ -286,16 +276,7 @@ impl ReaderView {
                 ));
             }
         }
-        let pad = total_width.saturating_sub(
-            left_seg_len
-                + sep
-                + right_seg_len
-                + if left_seg_len > 0 && right_seg_len > 0 {
-                    1
-                } else {
-                    0
-                },
-        );
+        let pad = total_width.saturating_sub(left_seg_len + sep + right_seg_len);
         if pad > 0 {
             footer_line.push_span(Span::styled(
                 " ".repeat(pad),
