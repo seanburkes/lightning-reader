@@ -3,12 +3,54 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum DocumentFormat {
-    Epub,
+    #[serde(alias = "epub")]
+    Epub3,
+    Epub2,
     Pdf,
+    #[serde(other)]
+    Other,
 }
 
 fn default_format() -> DocumentFormat {
-    DocumentFormat::Epub
+    DocumentFormat::Epub3
+}
+
+#[derive(Clone)]
+pub struct DocumentInfo {
+    pub id: String,
+    pub path: String,
+    pub title: Option<String>,
+    pub author: Option<String>,
+    pub format: DocumentFormat,
+}
+
+impl DocumentInfo {
+    pub fn from_book_id(book: &BookId, author: Option<String>) -> Self {
+        Self {
+            id: book.id.clone(),
+            path: book.path.clone(),
+            title: book.title.clone(),
+            author,
+            format: book.format,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct Document {
+    pub info: DocumentInfo,
+    pub blocks: Vec<Block>,
+    pub chapter_titles: Vec<String>,
+}
+
+impl Document {
+    pub fn new(info: DocumentInfo, blocks: Vec<Block>, chapter_titles: Vec<String>) -> Self {
+        Self {
+            info,
+            blocks,
+            chapter_titles,
+        }
+    }
 }
 
 #[derive(Clone)]

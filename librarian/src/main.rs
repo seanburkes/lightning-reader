@@ -4,7 +4,7 @@ use directories::ProjectDirs;
 use reader_core::{
     epub::EpubBook,
     state::{load_state, save_state},
-    types::{AppStateRecord, BookId, DocumentFormat, Location},
+    types::{AppStateRecord, BookId, Document, DocumentFormat, DocumentInfo, Location},
 };
 
 fn main() {
@@ -31,8 +31,9 @@ fn main() {
         id: format!("path:{}", epub_path),
         path: epub_path.clone(),
         title: book.title.clone(),
-        format: DocumentFormat::Epub,
+        format: DocumentFormat::Epub3,
     };
+    let document_info = DocumentInfo::from_book_id(&book_id, book.author.clone());
 
     // Debug: print spine length and first hrefs
     eprintln!("Title: {:?}", book.title);
@@ -185,6 +186,8 @@ fn main() {
         blocks = all_blocks;
     }
 
+    let document = Document::new(document_info, blocks, chapter_titles);
+
     // Load last location and update initial spine index
     let mut last = load_state(&book_id)
         .map(|r| r.last_location)
@@ -194,9 +197,7 @@ fn main() {
         });
     last.spine_index = selected_index;
 
-    let mut app = ui::app::App::new_with_blocks_at(blocks, last.offset, chapter_titles);
-    app.book_title = book.title.clone();
-    app.author = book.author.clone();
+    let mut app = ui::app::App::new_with_document(document, last.offset);
 
     // Load theme from ~/.config/librarian/config.toml
     if let Some(proj) = ProjectDirs::from("com", "sean", "librarian") {

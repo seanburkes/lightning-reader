@@ -12,7 +12,7 @@ use std::{fs, io::stdout, path::PathBuf, time::Duration};
 
 use crate::reader_view::ReaderView;
 use crate::views::TocView;
-use reader_core::types::Block as ReaderBlock;
+use reader_core::types::{Block as ReaderBlock, Document};
 
 pub enum Mode {
     Reader,
@@ -80,6 +80,13 @@ impl App {
             theme: crate::reader_view::Theme::default(),
             show_help: false,
         }
+    }
+    pub fn new_with_document(document: Document, initial_page: usize) -> Self {
+        let mut app =
+            Self::new_with_blocks_at(document.blocks, initial_page, document.chapter_titles);
+        app.book_title = document.info.title;
+        app.author = document.info.author;
+        app
     }
 
     pub fn run(mut self) -> std::io::Result<usize> {
