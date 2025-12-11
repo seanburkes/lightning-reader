@@ -101,14 +101,19 @@ fn pdf_metadata(doc: &LoDocument) -> (Option<String>, Option<String>) {
     let mut title: Option<String> = None;
     let mut author: Option<String> = None;
     if let Ok(info_obj) = doc.trailer.get(b"Info") {
-        if let Ok(info_ref) = info_obj.as_reference() {
-            if let Ok(dict) = doc.get_dictionary(info_ref) {
-                if let Ok(val) = dict.get(b"Title") {
-                    title = object_to_string(val);
-                }
-                if let Ok(val) = dict.get(b"Author") {
-                    author = object_to_string(val);
-                }
+        let dict_opt: Option<lopdf::Dictionary> = if let Ok(info_ref) = info_obj.as_reference() {
+            doc.get_dictionary(info_ref).ok().cloned()
+        } else if let Ok(dict_ref) = info_obj.as_dict() {
+            Some(dict_ref.clone())
+        } else {
+            None
+        };
+        if let Some(dict) = dict_opt {
+            if let Ok(val) = dict.get(b"Title") {
+                title = object_to_string(val);
+            }
+            if let Ok(val) = dict.get(b"Author") {
+                author = object_to_string(val);
             }
         }
     }
