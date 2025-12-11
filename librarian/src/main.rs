@@ -37,6 +37,10 @@ fn main() {
                 run_reader(document, book_id, 0);
                 return;
             }
+            Err(reader_core::pdf::PdfError::Encrypted) => {
+                eprintln!("Failed to open PDF: file is encrypted (password protected)");
+                return;
+            }
             Err(e) => {
                 eprintln!("Failed to open PDF: {}", e);
                 return;

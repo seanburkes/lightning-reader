@@ -11,6 +11,8 @@ pub enum PdfError {
     Io(#[from] std::io::Error),
     #[error("PDF parse error: {0}")]
     Pdf(#[from] lopdf::Error),
+    #[error("PDF requires a password or is encrypted")]
+    Encrypted,
     #[error("PDF is empty")]
     Empty,
 }
@@ -24,6 +26,9 @@ pub struct PdfDocument {
 
 pub fn load_pdf(path: &Path) -> Result<PdfDocument, PdfError> {
     let doc = LoDocument::load(path)?;
+    if doc.is_encrypted() {
+        return Err(PdfError::Encrypted);
+    }
     let pages = doc.get_pages();
     if pages.is_empty() {
         return Err(PdfError::Empty);
@@ -59,23 +64,37 @@ pub fn load_pdf(path: &Path) -> Result<PdfDocument, PdfError> {
 
 fn page_text_to_blocks(text: &str) -> Vec<Block> {
     let mut out = Vec::new();
-    for para in text.split("\n\n") {
-        let cleaned = para.trim();
-        if cleaned.is_empty() {
+    let mut current = String::new();
+    for raw_line in text.lines() {
+        let line = raw_line.trim_end();
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            flush_para(&mut current, &mut out);
             continue;
         }
-        let mut normalized = String::new();
-        for (i, line) in cleaned.lines().enumerate() {
-            if i > 0 {
-                normalized.push(' ');
+        if ends_with_hard_hyphen(trimmed) {
+            current.push_str(trimmed.trim_end_matches('-'));
+        } else {
+            if !current.is_empty() {
+                current.push(' ');
             }
-            normalized.push_str(line.trim());
-        }
-        if !normalized.is_empty() {
-            out.push(Block::Paragraph(normalized));
+            current.push_str(trimmed);
         }
     }
+    flush_para(&mut current, &mut out);
     out
+}
+
+fn flush_para(current: &mut String, out: &mut Vec<Block>) {
+    let cleaned = current.trim();
+    if !cleaned.is_empty() {
+        out.push(Block::Paragraph(cleaned.to_string()));
+    }
+    current.clear();
+}
+
+fn ends_with_hard_hyphen(s: &str) -> bool {
+    s.ends_with('-') && !s.ends_with("--")
 }
 
 fn pdf_metadata(doc: &LoDocument) -> (Option<String>, Option<String>) {
