@@ -1466,7 +1466,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.17",
  "unicode-linebreak",
  "unicode-segmentation",
  "zip",
