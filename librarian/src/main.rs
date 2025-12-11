@@ -3,20 +3,49 @@ use std::{env, path::Path};
 use directories::ProjectDirs;
 use reader_core::{
     epub::EpubBook,
+    pdf::load_pdf,
     state::{load_state, save_state},
     types::{AppStateRecord, BookId, Document, DocumentFormat, DocumentInfo, Location},
 };
 
 fn main() {
-    // Accept optional EPUB path: default to docs/alice.epub
+    // Accept optional EPUB/PDF path: default to docs/alice.epub
     let args: Vec<String> = env::args().collect();
-    let epub_path = args
+    let input_path = args
         .get(1)
         .cloned()
         .unwrap_or_else(|| "docs/alice.epub".to_string());
+    let format = detect_format(&input_path);
+
+    if matches!(format, DocumentFormat::Pdf) {
+        let path = Path::new(&input_path);
+        match load_pdf(path) {
+            Ok(pdf_doc) => {
+                let title = pdf_doc.title.clone().or_else(|| {
+                    path.file_stem()
+                        .and_then(|s| s.to_str())
+                        .map(|s| s.to_string())
+                });
+                let book_id = BookId {
+                    id: format!("path:{}", input_path),
+                    path: input_path.clone(),
+                    title,
+                    format: DocumentFormat::Pdf,
+                };
+                let info = DocumentInfo::from_book_id(&book_id, pdf_doc.author.clone());
+                let document = Document::new(info, pdf_doc.blocks, pdf_doc.chapter_titles);
+                run_reader(document, book_id, 0);
+                return;
+            }
+            Err(e) => {
+                eprintln!("Failed to open PDF: {}", e);
+                return;
+            }
+        }
+    }
 
     // Open EPUB and compute BookId (placeholder id = path sha256-like)
-    let path = std::path::Path::new(&epub_path);
+    let path = std::path::Path::new(&input_path);
     let book = match EpubBook::open(path) {
         Ok(b) => b,
         Err(_) => match EpubBook::open(Path::new("docs/alice.epub")) {
@@ -28,8 +57,8 @@ fn main() {
         },
     };
     let book_id = BookId {
-        id: format!("path:{}", epub_path),
-        path: epub_path.clone(),
+        id: format!("path:{}", input_path),
+        path: input_path.clone(),
         title: book.title.clone(),
         format: DocumentFormat::Epub3,
     };
@@ -187,7 +216,10 @@ fn main() {
     }
 
     let document = Document::new(document_info, blocks, chapter_titles);
+    run_reader(document, book_id, selected_index);
+}
 
+fn run_reader(document: Document, book_id: BookId, selected_index: usize) {
     // Load last location and update initial spine index
     let mut last = load_state(&book_id)
         .map(|r| r.last_location)
@@ -198,7 +230,29 @@ fn main() {
     last.spine_index = selected_index;
 
     let mut app = ui::app::App::new_with_document(document, last.offset);
+    apply_theme_config(&mut app);
 
+    let current_idx = match app.run() {
+        Ok(idx) => idx,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            0
+        }
+    };
+
+    // Save last location using current page index
+    last.offset = current_idx;
+    let rec = AppStateRecord {
+        book: book_id,
+        last_location: last,
+        bookmarks: vec![],
+    };
+    let _ = save_state(&rec);
+
+    eprintln!("Run with: cargo run -p librarian [path_to_epub]  # default docs/alice.epub");
+}
+
+fn apply_theme_config(app: &mut ui::app::App) {
     // Load theme from ~/.config/librarian/config.toml
     if let Some(proj) = ProjectDirs::from("com", "sean", "librarian") {
         let cfg_path = proj.config_dir().join("config.toml");
@@ -296,23 +350,19 @@ fn main() {
             }
         }
     }
+}
 
-    let current_idx = match app.run() {
-        Ok(idx) => idx,
-        Err(e) => {
-            eprintln!("Error: {}", e);
-            0
-        }
-    };
-
-    // Save last location using current page index
-    last.offset = current_idx;
-    let rec = AppStateRecord {
-        book: book_id,
-        last_location: last,
-        bookmarks: vec![],
-    };
-    let _ = save_state(&rec);
-
-    eprintln!("Run with: cargo run -p librarian [path_to_epub]  # default docs/alice.epub");
+fn detect_format(path: &str) -> DocumentFormat {
+    Path::new(path)
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|ext| {
+            let lower = ext.to_ascii_lowercase();
+            match lower.as_str() {
+                "pdf" => DocumentFormat::Pdf,
+                "epub" => DocumentFormat::Epub3,
+                _ => DocumentFormat::Other,
+            }
+        })
+        .unwrap_or(DocumentFormat::Epub3)
 }
