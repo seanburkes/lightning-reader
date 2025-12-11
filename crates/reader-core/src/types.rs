@@ -1,5 +1,16 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DocumentFormat {
+    Epub,
+    Pdf,
+}
+
+fn default_format() -> DocumentFormat {
+    DocumentFormat::Epub
+}
+
 #[derive(Clone)]
 pub enum Block {
     Paragraph(String),
@@ -14,6 +25,8 @@ pub struct BookId {
     pub id: String,   // sha256 or dc:identifier
     pub path: String, // absolute path
     pub title: Option<String>,
+    #[serde(default = "default_format")]
+    pub format: DocumentFormat,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

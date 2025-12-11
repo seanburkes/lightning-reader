@@ -1,11 +1,11 @@
+use std::{env, path::Path};
+
 use directories::ProjectDirs;
-use reader_core::state::{load_state, save_state};
 use reader_core::{
     epub::EpubBook,
-    types::{AppStateRecord, BookId, Location},
+    state::{load_state, save_state},
+    types::{AppStateRecord, BookId, DocumentFormat, Location},
 };
-use std::env;
-use std::path::Path;
 
 fn main() {
     // Accept optional EPUB path: default to docs/alice.epub
@@ -31,6 +31,7 @@ fn main() {
         id: format!("path:{}", epub_path),
         path: epub_path.clone(),
         title: book.title.clone(),
+        format: DocumentFormat::Epub,
     };
 
     // Debug: print spine length and first hrefs
