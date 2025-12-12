@@ -1,3 +1,5 @@
+use std::{fs, io::stdout, path::PathBuf, time::Duration};
+
 use crossterm::{
     event::{self, Event, KeyCode},
     execute,
@@ -8,12 +10,11 @@ use ratatui::{
     prelude::*,
     widgets::{Block as UiBlock, Borders, Clear, Paragraph, Wrap},
 };
-use std::{fs, io::stdout, path::PathBuf, time::Duration};
-
-use crate::reader_view::ReaderView;
-use crate::views::TocView;
 use reader_core::types::{Block as ReaderBlock, Document};
 
+use crate::{
+    layout::centered_rect, reader_view::ReaderView, search_view::SearchView, views::TocView,
+};
 pub enum Mode {
     Reader,
     Toc,
@@ -24,10 +25,12 @@ pub struct App {
     pub initial_page: Option<usize>,
     pub mode: Mode,
     pub toc: Option<TocView>,
+    pub search: Option<SearchView>,
     pub chapter_titles: Vec<String>,
     pub book_title: Option<String>,
     pub author: Option<String>,
     pub theme: crate::reader_view::Theme,
+    pub last_search: Option<String>,
     pub show_help: bool,
 }
 
@@ -44,10 +47,12 @@ impl App {
             initial_page: None,
             mode: Mode::Reader,
             toc: None,
+            search: None,
             chapter_titles: Vec::new(),
             book_title: None,
             author: None,
             theme: crate::reader_view::Theme::default(),
+            last_search: None,
             show_help: false,
         }
     }
@@ -57,10 +62,12 @@ impl App {
             initial_page: None,
             mode: Mode::Reader,
             toc: None,
+            search: None,
             chapter_titles: Vec::new(),
             book_title: None,
             author: None,
             theme: crate::reader_view::Theme::default(),
+            last_search: None,
             show_help: false,
         }
     }
@@ -74,10 +81,12 @@ impl App {
             initial_page: Some(initial_page),
             mode: Mode::Reader,
             toc: None,
+            search: None,
             chapter_titles,
             book_title: None,
             author: None,
             theme: crate::reader_view::Theme::default(),
+            last_search: None,
             show_help: false,
         }
     }
@@ -155,6 +164,9 @@ impl App {
                         }
                     }
                 }
+                if let Some(search) = &self.search {
+                    search.render(f, size);
+                }
                 if self.show_help {
                     let popup_area = centered_rect(70, 70, size);
                     let help_lines = vec![
@@ -163,6 +175,7 @@ impl App {
                         "PageUp / PageDown: jump half-page",
                         "h / l or arrows: adjust column width",
                         "t: toggle table of contents; Enter to jump; Esc to close TOC",
+                        "/: search; Enter to submit; Esc to cancel",
                         "J: toggle justification (persists)",
                         "b: toggle two-page spread (persists)",
                         "?: toggle this help",
@@ -183,6 +196,25 @@ impl App {
                 Ok(true) => {
                     match event::read() {
                         Ok(Event::Key(key)) => {
+                            if let Some(search) = &mut self.search {
+                                match key.code {
+                                    KeyCode::Esc => {
+                                        self.search = None;
+                                    }
+                                    KeyCode::Enter => {
+                                        self.last_search = Some(search.query.clone());
+                                        self.search = None;
+                                    }
+                                    KeyCode::Backspace => {
+                                        search.backspace();
+                                    }
+                                    KeyCode::Char(c) => {
+                                        search.push_char(c);
+                                    }
+                                    _ => {}
+                                }
+                                continue;
+                            }
                             if self.show_help {
                                 match key.code {
                                     KeyCode::Esc | KeyCode::Char('?') => {
@@ -212,6 +244,14 @@ impl App {
                                             self.mode = Mode::Reader;
                                         }
                                     }
+                                }
+                                KeyCode::Char('/') => {
+                                    let search = if let Some(prev) = &self.last_search {
+                                        SearchView::with_query(prev.clone())
+                                    } else {
+                                        SearchView::new()
+                                    };
+                                    self.search = Some(search);
                                 }
                                 KeyCode::Char('t') => {
                                     // Build TOC items from chapter_starts; show indices for now.
@@ -384,26 +424,6 @@ impl App {
 
 fn settings_path() -> Option<PathBuf> {
     config_dir().map(|dir| dir.join("lightning-librarian").join("settings.toml"))
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(r);
-    let horizontal = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(vertical[1]);
-    horizontal[1]
 }
 
 fn load_settings() -> (bool, bool) {
