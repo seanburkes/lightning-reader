@@ -351,14 +351,15 @@ impl ReaderView {
         f.render_widget(footer, header_footer_chunks[2]);
     }
 
-    pub fn search_forward(&self, query: &str) -> Option<usize> {
+    pub fn search_forward(&self, query: &str, start_from: Option<usize>) -> Option<usize> {
         let needle = query.trim();
         if needle.is_empty() || self.pages.is_empty() {
             return None;
         }
         let needle = needle.to_lowercase();
         let total = self.pages.len();
-        let start = self.current.min(total.saturating_sub(1));
+        let start_raw = start_from.unwrap_or(self.current);
+        let start = if total == 0 { 0 } else { start_raw % total };
         for offset in 0..total {
             let idx = (start + offset) % total;
             if Self::page_contains(&self.pages[idx], &needle) {
@@ -489,8 +490,8 @@ mod tests {
             page(&["Second Match"]),
             page(&["Third"]),
         ];
-        assert_eq!(view.search_forward("match"), Some(1));
-        assert_eq!(view.search_forward("SeCoNd"), Some(1));
+        assert_eq!(view.search_forward("match", None), Some(1));
+        assert_eq!(view.search_forward("SeCoNd", None), Some(1));
     }
 
     #[test]
@@ -498,14 +499,30 @@ mod tests {
         let mut view = ReaderView::new();
         view.pages = vec![page(&["Alpha"]), page(&["Beta"]), page(&["Gamma"])];
         view.current = 2;
-        assert_eq!(view.search_forward("alpha"), Some(0));
+        assert_eq!(view.search_forward("alpha", None), Some(0));
     }
 
     #[test]
     fn search_forward_matches_across_lines() {
         let mut view = ReaderView::new();
         view.pages = vec![page(&["Hello brave", "new world"]), page(&["Unused"])];
-        assert_eq!(view.search_forward("brave new"), Some(0));
+        assert_eq!(view.search_forward("brave new", None), Some(0));
+    }
+
+    #[test]
+    fn search_forward_can_start_after_previous_hit() {
+        let mut view = ReaderView::new();
+        view.pages = vec![
+            page(&["One fish"]),
+            page(&["Two fish"]),
+            page(&["Red fish"]),
+            page(&["Blue fish"]),
+        ];
+        assert_eq!(view.search_forward("fish", None), Some(0));
+        assert_eq!(view.search_forward("fish", Some(1)), Some(1));
+        assert_eq!(view.search_forward("fish", Some(2)), Some(2));
+        assert_eq!(view.search_forward("fish", Some(3)), Some(3));
+        assert_eq!(view.search_forward("fish", Some(4)), Some(0)); // wraps
     }
 
     #[test]

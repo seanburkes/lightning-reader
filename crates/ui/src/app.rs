@@ -31,6 +31,7 @@ pub struct App {
     pub author: Option<String>,
     pub theme: crate::reader_view::Theme,
     pub last_search: Option<String>,
+    pub last_search_hit: Option<usize>,
     pub show_help: bool,
 }
 
@@ -53,6 +54,7 @@ impl App {
             author: None,
             theme: crate::reader_view::Theme::default(),
             last_search: None,
+            last_search_hit: None,
             show_help: false,
         }
     }
@@ -68,6 +70,7 @@ impl App {
             author: None,
             theme: crate::reader_view::Theme::default(),
             last_search: None,
+            last_search_hit: None,
             show_help: false,
         }
     }
@@ -87,6 +90,7 @@ impl App {
             author: None,
             theme: crate::reader_view::Theme::default(),
             last_search: None,
+            last_search_hit: None,
             show_help: false,
         }
     }
@@ -203,14 +207,27 @@ impl App {
                                     }
                                     KeyCode::Enter => {
                                         let query = search.query.clone();
-                                        self.last_search = Some(query.clone());
-                                        if let Some(idx) = view.search_forward(&query) {
+                                        let trimmed = query.trim().to_string();
+                                        let start_from =
+                                            if self.last_search.as_deref().map(str::trim)
+                                                == Some(trimmed.as_str())
+                                            {
+                                                self.last_search_hit.map(|p| p + 1)
+                                            } else {
+                                                None
+                                            };
+                                        self.last_search = Some(trimmed.clone());
+                                        if let Some(idx) = view.search_forward(&trimmed, start_from)
+                                        {
                                             let target = if view.two_pane {
                                                 idx.saturating_sub(idx % 2)
                                             } else {
                                                 idx
                                             };
                                             view.current = target;
+                                            self.last_search_hit = Some(idx);
+                                        } else {
+                                            self.last_search_hit = None;
                                         }
                                         self.search = None;
                                     }
