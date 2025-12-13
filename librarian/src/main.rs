@@ -3,7 +3,7 @@ use std::{env, path::Path};
 use directories::ProjectDirs;
 use reader_core::{
     epub::EpubBook,
-    pdf::load_pdf,
+    pdf::load_pdf_with_limit,
     state::{load_state, save_state},
     types::{AppStateRecord, BookId, Document, DocumentFormat, DocumentInfo, Location},
 };
@@ -19,7 +19,10 @@ fn main() {
 
     if matches!(format, DocumentFormat::Pdf) {
         let path = Path::new(&input_path);
-        match load_pdf(path) {
+        let page_limit = env::var("LIBRARIAN_PDF_PAGE_LIMIT")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok());
+        match load_pdf_with_limit(path, page_limit) {
             Ok(pdf_doc) => {
                 let title = pdf_doc.title.clone().or_else(|| {
                     path.file_stem()
@@ -34,6 +37,12 @@ fn main() {
                 };
                 let info = DocumentInfo::from_book_id(&book_id, pdf_doc.author.clone());
                 let document = Document::new(info, pdf_doc.blocks, pdf_doc.chapter_titles);
+                if pdf_doc.truncated {
+                    eprintln!(
+                        "Loaded {} pages (truncated); set LIBRARIAN_PDF_PAGE_LIMIT=0 to load all",
+                        book_id.title.as_deref().unwrap_or("PDF")
+                    );
+                }
                 run_reader(document, book_id, 0);
                 return;
             }

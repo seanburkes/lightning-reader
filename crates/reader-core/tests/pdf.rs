@@ -4,7 +4,7 @@ use lopdf::{
     content::{Content, Operation},
     dictionary, Object, Stream,
 };
-use reader_core::pdf::load_pdf;
+use reader_core::pdf::{load_pdf, load_pdf_with_limit, PdfLoader};
 
 fn build_test_pdf(pages: &[&str]) -> Vec<u8> {
     let mut doc = lopdf::Document::with_version("1.5");
@@ -107,6 +107,7 @@ fn pdf_loader_extracts_text_and_metadata() {
     let doc = load_pdf(&path).expect("load pdf");
     assert_eq!(doc.title.as_deref(), Some("Test Title"));
     assert_eq!(doc.author.as_deref(), Some("Test Author"));
+    assert!(!doc.truncated);
     assert_eq!(
         doc.chapter_titles,
         vec!["Page 1".to_string(), "Page 2".to_string()]
@@ -125,4 +126,46 @@ fn pdf_loader_extracts_text_and_metadata() {
     assert!(body.contains("Page 2 body"));
     // Ensure page separator is present between pages
     assert!(body.contains("───"));
+}
+
+#[test]
+fn pdf_loader_handles_page_limits() {
+    let pdf_bytes = build_test_pdf(&["First page", "Second page", "Third page"]);
+    let mut tmp = tempfile::NamedTempFile::new().expect("tmp file");
+    tmp.write_all(&pdf_bytes).expect("write pdf");
+    let path = tmp.path().to_path_buf();
+
+    let doc = load_pdf_with_limit(&path, Some(2)).expect("load limited pdf");
+    assert!(doc.truncated);
+    assert_eq!(doc.chapter_titles.len(), 2);
+    let text: String = doc
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            reader_core::types::Block::Paragraph(t) => Some(t.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("First page"));
+    assert!(text.contains("Second page"));
+    assert!(text.contains("truncated: loaded 2 of 3 pages"));
+}
+
+#[test]
+fn pdf_loader_loads_single_page_on_demand() {
+    let pdf_bytes = build_test_pdf(&["Alpha", "Beta"]);
+    let mut tmp = tempfile::NamedTempFile::new().expect("tmp file");
+    tmp.write_all(&pdf_bytes).expect("write pdf");
+    let path = tmp.path().to_path_buf();
+
+    let loader = PdfLoader::open(&path).expect("open loader");
+    assert_eq!(loader.page_count(), 2);
+    let first = loader.load_page(0).expect("load page 0");
+    assert!(first
+        .iter()
+        .any(|b| matches!(b, reader_core::types::Block::Paragraph(t) if t.contains("Alpha"))));
+    // Loading the same page should hit the cache and still succeed
+    let cached = loader.load_page(0).expect("load page 0 again");
+    assert_eq!(first.len(), cached.len());
 }

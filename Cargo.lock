@@ -1516,6 +1516,7 @@ dependencies = [
  "hyphenation",
  "kuchiki",
  "lopdf",
+ "lru",
  "quick-xml",
  "serde",
  "serde_json",

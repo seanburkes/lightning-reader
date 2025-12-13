@@ -1,6 +1,7 @@
-use std::path::Path;
+use std::{num::NonZeroUsize, path::Path, sync::Mutex};
 
 use lopdf::Document as LoDocument;
+use lru::LruCache;
 use thiserror::Error;
 
 use crate::types::Block;
@@ -15,6 +16,8 @@ pub enum PdfError {
     Encrypted,
     #[error("PDF is empty")]
     Empty,
+    #[error("Requested page {0} is out of bounds")]
+    InvalidPage(usize),
 }
 
 pub struct PdfDocument {
@@ -22,43 +25,125 @@ pub struct PdfDocument {
     pub author: Option<String>,
     pub blocks: Vec<Block>,
     pub chapter_titles: Vec<String>,
+    pub truncated: bool,
+}
+
+pub struct PdfSummary {
+    pub title: Option<String>,
+    pub author: Option<String>,
+    pub page_count: usize,
+}
+
+pub struct PdfLoader {
+    doc: LoDocument,
+    pages: Vec<u32>,
+    summary: PdfSummary,
+    cache: Mutex<LruCache<usize, Vec<Block>>>,
+}
+
+impl PdfLoader {
+    pub fn open(path: &Path) -> Result<Self, PdfError> {
+        let doc = LoDocument::load(path)?;
+        if doc.is_encrypted() {
+            return Err(PdfError::Encrypted);
+        }
+        let pages_map = doc.get_pages();
+        if pages_map.is_empty() {
+            return Err(PdfError::Empty);
+        }
+        let page_count = pages_map.len();
+        let pages = pages_map.into_iter().map(|(page, _)| page).collect();
+        let (title, author) = pdf_metadata(&doc);
+        Ok(Self {
+            doc,
+            pages,
+            summary: PdfSummary {
+                title,
+                author,
+                page_count,
+            },
+            cache: Mutex::new(LruCache::new(NonZeroUsize::new(8).unwrap())),
+        })
+    }
+
+    pub fn summary(&self) -> &PdfSummary {
+        &self.summary
+    }
+
+    pub fn page_count(&self) -> usize {
+        self.pages.len()
+    }
+
+    pub fn load_page(&self, page_index: usize) -> Result<Vec<Block>, PdfError> {
+        if let Some(cached) = self.cache.lock().unwrap().get(&page_index).cloned() {
+            return Ok(cached);
+        }
+        let page_num = *self
+            .pages
+            .get(page_index)
+            .ok_or(PdfError::InvalidPage(page_index))?;
+        let text = self.doc.extract_text(&[page_num]).unwrap_or_default();
+        let mut blocks = page_text_to_blocks(&text);
+        if blocks.is_empty() {
+            blocks.push(Block::Paragraph("[empty page]".into()));
+        }
+        self.cache.lock().unwrap().put(page_index, blocks.clone());
+        Ok(blocks)
+    }
+
+    pub fn load_range(
+        &self,
+        start: usize,
+        count: usize,
+    ) -> Result<Vec<(usize, Vec<Block>)>, PdfError> {
+        let end = (start + count).min(self.page_count());
+        let mut out = Vec::with_capacity(end.saturating_sub(start));
+        for idx in start..end {
+            out.push((idx, self.load_page(idx)?));
+        }
+        Ok(out)
+    }
 }
 
 pub fn load_pdf(path: &Path) -> Result<PdfDocument, PdfError> {
-    let doc = LoDocument::load(path)?;
-    if doc.is_encrypted() {
-        return Err(PdfError::Encrypted);
-    }
-    let pages = doc.get_pages();
-    if pages.is_empty() {
-        return Err(PdfError::Empty);
-    }
+    load_pdf_with_limit(path, None)
+}
 
-    let (title, author) = pdf_metadata(&doc);
-
+pub fn load_pdf_with_limit(path: &Path, max_pages: Option<usize>) -> Result<PdfDocument, PdfError> {
+    let loader = PdfLoader::open(path)?;
+    let total_pages = loader.page_count();
+    let to_load = max_pages
+        .and_then(|m| if m == 0 { None } else { Some(m) })
+        .map(|m| m.min(total_pages))
+        .unwrap_or(total_pages);
     let mut blocks: Vec<Block> = Vec::new();
-    let mut chapter_titles: Vec<String> = Vec::with_capacity(pages.len());
-    for (idx, (page_num, _)) in pages.iter().enumerate() {
+    let mut chapter_titles: Vec<String> = Vec::with_capacity(to_load);
+    for idx in 0..to_load {
         if idx > 0 {
             blocks.push(Block::Paragraph(String::new()));
             blocks.push(Block::Paragraph("───".into()));
             blocks.push(Block::Paragraph(String::new()));
         }
-        let text = doc.extract_text(&[*page_num]).unwrap_or_default();
-        let page_blocks = page_text_to_blocks(&text);
-        if page_blocks.is_empty() {
-            blocks.push(Block::Paragraph("[empty page]".into()));
-        } else {
-            blocks.extend(page_blocks);
-        }
+        let page_blocks = loader.load_page(idx)?;
+        blocks.extend(page_blocks);
         chapter_titles.push(format!("Page {}", idx + 1));
     }
 
+    let truncated = to_load < total_pages;
+    if truncated {
+        blocks.push(Block::Paragraph(String::new()));
+        blocks.push(Block::Paragraph(format!(
+            "[truncated: loaded {} of {} pages; set LIBRARIAN_PDF_PAGE_LIMIT=0 to load all]",
+            to_load, total_pages
+        )));
+    }
+
     Ok(PdfDocument {
-        title,
-        author,
+        title: loader.summary.title.clone(),
+        author: loader.summary.author.clone(),
         blocks,
         chapter_titles,
+        truncated,
     })
 }
 
