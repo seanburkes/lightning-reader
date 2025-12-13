@@ -262,8 +262,10 @@ pub fn load_pdf_with_backend(
             blocks.push(Block::Paragraph(String::new()));
         }
         let page_blocks = loader.load_page(idx)?;
-        blocks.extend(page_blocks);
-        chapter_titles.push(format!("Page {}", idx + 1));
+        blocks.extend(page_blocks.clone());
+        let title =
+            page_title_from_blocks(&page_blocks).unwrap_or_else(|| format!("Page {}", idx + 1));
+        chapter_titles.push(title);
     }
 
     let truncated = to_load < total_pages;
@@ -394,4 +396,23 @@ fn ops_to_text(ops: &[Op]) -> String {
         }
     }
     out
+}
+
+fn page_title_from_blocks(blocks: &[Block]) -> Option<String> {
+    blocks.iter().find_map(|b| match b {
+        Block::Paragraph(t) => {
+            let trimmed = t.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let len = trimmed.chars().count();
+            if len >= 6 && len <= 80 {
+                Some(trimmed.to_string())
+            } else {
+                None
+            }
+        }
+        Block::Heading(t, _) => Some(t.trim().to_string()),
+        _ => None,
+    })
 }
