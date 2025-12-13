@@ -345,6 +345,37 @@ impl ReaderView {
         f.render_widget(footer, header_footer_chunks[2]);
     }
 
+    pub fn search_forward(&self, query: &str) -> Option<usize> {
+        let needle = query.trim();
+        if needle.is_empty() || self.pages.is_empty() {
+            return None;
+        }
+        let needle = needle.to_lowercase();
+        let total = self.pages.len();
+        let start = self.current.min(total.saturating_sub(1));
+        for offset in 0..total {
+            let idx = (start + offset) % total;
+            if Self::page_contains(&self.pages[idx], &needle) {
+                return Some(idx);
+            }
+        }
+        None
+    }
+
+    fn page_contains(page: &Page, needle: &str) -> bool {
+        if needle.is_empty() {
+            return false;
+        }
+        let mut buf = String::new();
+        for (i, line) in page.lines.iter().enumerate() {
+            if i > 0 {
+                buf.push(' ');
+            }
+            buf.push_str(&line.to_lowercase());
+        }
+        buf.contains(needle)
+    }
+
     pub fn up(&mut self, lines: usize) {
         let delta = lines.max(1);
         let step = if self.two_pane {
@@ -387,5 +418,43 @@ impl ReaderView {
         } else {
             vec![Line::from("")] // empty placeholder for missing spread page
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn page(lines: &[&str]) -> Page {
+        Page {
+            lines: lines.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn search_forward_is_case_insensitive() {
+        let mut view = ReaderView::new();
+        view.pages = vec![
+            page(&["First page"]),
+            page(&["Second Match"]),
+            page(&["Third"]),
+        ];
+        assert_eq!(view.search_forward("match"), Some(1));
+        assert_eq!(view.search_forward("SeCoNd"), Some(1));
+    }
+
+    #[test]
+    fn search_forward_wraps_from_end() {
+        let mut view = ReaderView::new();
+        view.pages = vec![page(&["Alpha"]), page(&["Beta"]), page(&["Gamma"])];
+        view.current = 2;
+        assert_eq!(view.search_forward("alpha"), Some(0));
+    }
+
+    #[test]
+    fn search_forward_matches_across_lines() {
+        let mut view = ReaderView::new();
+        view.pages = vec![page(&["Hello brave", "new world"]), page(&["Unused"])];
+        assert_eq!(view.search_forward("brave new"), Some(0));
     }
 }

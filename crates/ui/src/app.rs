@@ -202,7 +202,16 @@ impl App {
                                         self.search = None;
                                     }
                                     KeyCode::Enter => {
-                                        self.last_search = Some(search.query.clone());
+                                        let query = search.query.clone();
+                                        self.last_search = Some(query.clone());
+                                        if let Some(idx) = view.search_forward(&query) {
+                                            let target = if view.two_pane {
+                                                idx.saturating_sub(idx % 2)
+                                            } else {
+                                                idx
+                                            };
+                                            view.current = target;
+                                        }
                                         self.search = None;
                                     }
                                     KeyCode::Backspace => {
