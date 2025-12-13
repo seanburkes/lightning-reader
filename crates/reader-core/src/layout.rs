@@ -65,13 +65,12 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
                 // Two-space indent; add a rule when there is room
                 let show_rule = size.width >= 16;
                 let prefix = if show_rule { "│ " } else { "  " };
-                let eff_width = size
-                    .width
-                    .saturating_sub(prefix.graphemes(true).count() as u16)
-                    as usize;
-                let lines = wrap_text(text, eff_width.max(4));
-                for line in lines {
-                    let prefixed = format!("{}{}", prefix, line);
+                let prefix_width = prefix.graphemes(true).count() as u16;
+                let eff_width = size.width.saturating_sub(prefix_width) as usize;
+                // Preserve line breaks like a code/pre block; truncate when too long
+                for raw_line in text.lines() {
+                    let clipped = truncate_graphemes(raw_line, eff_width.max(4));
+                    let prefixed = format!("{}{}", prefix, clipped);
                     current.lines.push(prefixed);
                     if current.lines.len() as u16 >= size.height {
                         pages.push(current.clone());
@@ -291,6 +290,20 @@ fn justify_line(line: &str, width: usize) -> String {
             acc.push_str(g);
         }
         return acc;
+    }
+    out
+}
+
+fn truncate_graphemes(s: &str, width: usize) -> String {
+    let mut out = String::new();
+    let mut count = 0usize;
+    for g in s.graphemes(true) {
+        if count >= width {
+            out.push('…');
+            break;
+        }
+        out.push_str(g);
+        count += 1;
     }
     out
 }
