@@ -46,6 +46,7 @@ pub struct ReaderView {
     pub book_title: Option<String>,
     pub author: Option<String>,
     pub theme: Theme,
+    pub total_pages: Option<usize>,
 }
 
 impl Default for ReaderView {
@@ -67,6 +68,7 @@ impl ReaderView {
             book_title: None,
             author: None,
             theme: Theme::default(),
+            total_pages: None,
         }
     }
 
@@ -139,8 +141,9 @@ impl ReaderView {
         let body_width = header_footer_chunks[1].width as usize;
 
         // Header: chapter title (left) | page X/Y (right)
-        let total = self.pages.len();
-        let current = if total == 0 { 0 } else { self.current + 1 };
+        let loaded = self.pages.len();
+        let total = self.total_pages.unwrap_or(loaded).max(loaded);
+        let current = if loaded == 0 { 0 } else { self.current + 1 };
         let chapter_label = self
             .chapter_starts
             .iter()

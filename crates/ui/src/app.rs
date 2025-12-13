@@ -1,4 +1,4 @@
-use std::{fs, io::stdout, path::PathBuf, time::Duration};
+use std::{fs, io::stdout, path::PathBuf, sync::mpsc::Receiver, time::Duration};
 
 use crossterm::{
     event::{self, Event, KeyCode},
@@ -33,6 +33,13 @@ pub struct App {
     pub last_search: Option<String>,
     pub last_search_hit: Option<usize>,
     pub show_help: bool,
+    pub incoming_pages: Option<Receiver<IncomingPage>>,
+    pub total_pages: Option<usize>,
+}
+
+pub struct IncomingPage {
+    pub page_index: usize,
+    pub blocks: Vec<ReaderBlock>,
 }
 
 impl Default for App {
@@ -56,6 +63,8 @@ impl App {
             last_search: None,
             last_search_hit: None,
             show_help: false,
+            incoming_pages: None,
+            total_pages: None,
         }
     }
     pub fn new_with_blocks(blocks: Vec<ReaderBlock>) -> Self {
@@ -72,6 +81,8 @@ impl App {
             last_search: None,
             last_search_hit: None,
             show_help: false,
+            incoming_pages: None,
+            total_pages: None,
         }
     }
     pub fn new_with_blocks_at(
@@ -92,6 +103,8 @@ impl App {
             last_search: None,
             last_search_hit: None,
             show_help: false,
+            incoming_pages: None,
+            total_pages: None,
         }
     }
     pub fn new_with_document(document: Document, initial_page: usize) -> Self {
@@ -100,6 +113,40 @@ impl App {
         app.book_title = document.info.title;
         app.author = document.info.author;
         app
+    }
+
+    pub fn new_with_document_streaming(
+        document: Document,
+        initial_page: usize,
+        incoming_pages: Receiver<IncomingPage>,
+        total_pages: usize,
+    ) -> Self {
+        let mut app = Self::new_with_document(document, initial_page);
+        app.incoming_pages = Some(incoming_pages);
+        app.total_pages = Some(total_pages);
+        app
+    }
+
+    fn poll_incoming(&mut self, view: &mut ReaderView, inner: reader_core::layout::Size) {
+        let mut added = false;
+        if let Some(rx) = &self.incoming_pages {
+            while let Ok(msg) = rx.try_recv() {
+                if !self.blocks.is_empty() {
+                    self.blocks.push(ReaderBlock::Paragraph(String::new()));
+                    self.blocks.push(ReaderBlock::Paragraph("───".into()));
+                    self.blocks.push(ReaderBlock::Paragraph(String::new()));
+                }
+                self.blocks.extend(msg.blocks);
+                self.chapter_titles
+                    .push(format!("Page {}", msg.page_index + 1));
+                added = true;
+            }
+        }
+        if added {
+            view.reflow(&self.blocks, inner);
+            view.chapter_titles = self.chapter_titles.clone();
+            view.total_pages = self.total_pages;
+        }
     }
 
     pub fn run(mut self) -> std::io::Result<usize> {
@@ -124,6 +171,8 @@ impl App {
         let p = reader_core::layout::paginate_with_justify(&self.blocks, inner, view.justify);
         view.pages = p.pages;
         view.chapter_starts = p.chapter_starts;
+        view.chapter_titles = self.chapter_titles.clone();
+        view.total_pages = self.total_pages;
         if let Some(idx) = self.initial_page {
             view.current = idx.min(view.pages.len().saturating_sub(1));
         }
@@ -136,6 +185,7 @@ impl App {
                 let size = f.size();
                 height = size.height.saturating_sub(2);
                 let inner = ReaderView::inner_size(size, width, view.two_pane);
+                self.poll_incoming(&mut view, inner);
                 view.reflow(&self.blocks, inner);
                 view.render(f, size, width, self.last_search.as_deref());
             });
@@ -150,6 +200,7 @@ impl App {
                 height = size.height.saturating_sub(2);
                 // Respect configured column width; do not override with terminal width
                 let inner = ReaderView::inner_size(size, width, view.two_pane);
+                self.poll_incoming(&mut view, inner);
                 if (inner.width, inner.height) != last_inner {
                     view.reflow(&self.blocks, inner);
                     // Clamp current page if needed

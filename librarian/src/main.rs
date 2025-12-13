@@ -1,12 +1,18 @@
-use std::{env, path::Path};
+use std::{
+    env,
+    path::Path,
+    sync::mpsc::{channel, Receiver},
+    thread,
+};
 
 use directories::ProjectDirs;
 use reader_core::{
     epub::EpubBook,
-    pdf::load_pdf_with_limit,
+    pdf::PdfLoader,
     state::{load_state, save_state},
     types::{AppStateRecord, BookId, Document, DocumentFormat, DocumentInfo, Location},
 };
+use ui::app::IncomingPage;
 
 fn main() {
     // Accept optional EPUB/PDF path: default to docs/alice.epub
@@ -22,28 +28,19 @@ fn main() {
         let page_limit = env::var("LIBRARIAN_PDF_PAGE_LIMIT")
             .ok()
             .and_then(|s| s.parse::<usize>().ok());
-        match load_pdf_with_limit(path, page_limit) {
-            Ok(pdf_doc) => {
-                let title = pdf_doc.title.clone().or_else(|| {
-                    path.file_stem()
-                        .and_then(|s| s.to_str())
-                        .map(|s| s.to_string())
-                });
-                let book_id = BookId {
-                    id: format!("path:{}", input_path),
-                    path: input_path.clone(),
-                    title,
-                    format: DocumentFormat::Pdf,
-                };
-                let info = DocumentInfo::from_book_id(&book_id, pdf_doc.author.clone());
-                let document = Document::new(info, pdf_doc.blocks, pdf_doc.chapter_titles);
-                if pdf_doc.truncated {
+        let initial_pages = env::var("LIBRARIAN_PDF_INITIAL_PAGES")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(3);
+        match stream_pdf(path, page_limit, initial_pages) {
+            Ok((document, book_id, rx, target_pages, actual_pages, truncated)) => {
+                if truncated {
                     eprintln!(
-                        "Loaded {} pages (truncated); set LIBRARIAN_PDF_PAGE_LIMIT=0 to load all",
-                        book_id.title.as_deref().unwrap_or("PDF")
+                        "Page limit applied: loading up to {} of {} pages (set LIBRARIAN_PDF_PAGE_LIMIT=0 to load all)",
+                        target_pages, actual_pages
                     );
                 }
-                run_reader(document, book_id, 0);
+                run_reader_streaming(document, book_id, 0, rx, target_pages);
                 return;
             }
             Err(reader_core::pdf::PdfError::Encrypted) => {
@@ -232,6 +229,85 @@ fn main() {
     run_reader(document, book_id, selected_index);
 }
 
+fn stream_pdf(
+    path: &Path,
+    page_limit: Option<usize>,
+    initial_pages: usize,
+) -> Result<
+    (Document, BookId, Receiver<IncomingPage>, usize, usize, bool),
+    reader_core::pdf::PdfError,
+> {
+    let loader = PdfLoader::open(path)?;
+    let total_pages_actual = loader.page_count();
+    let target_pages = page_limit
+        .and_then(|m| {
+            if m == 0 {
+                None
+            } else {
+                Some(m.min(total_pages_actual))
+            }
+        })
+        .unwrap_or(total_pages_actual);
+    let initial = initial_pages.max(1).min(target_pages);
+    let summary = loader.summary().clone();
+    let title = summary.clone().title.or_else(|| {
+        path.file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+    });
+    let mut blocks: Vec<reader_core::types::Block> = Vec::new();
+    let mut chapter_titles: Vec<String> = Vec::new();
+    for (idx, page_blocks) in loader.load_range(0, initial)? {
+        if idx > 0 {
+            blocks.push(reader_core::types::Block::Paragraph(String::new()));
+            blocks.push(reader_core::types::Block::Paragraph("───".into()));
+            blocks.push(reader_core::types::Block::Paragraph(String::new()));
+        }
+        blocks.extend(page_blocks);
+        chapter_titles.push(format!("Page {}", idx + 1));
+    }
+
+    let (tx, rx) = channel();
+    if initial < target_pages {
+        let start_at = initial;
+        let loader = loader;
+        thread::spawn(move || {
+            for idx in start_at..target_pages {
+                match loader.load_page(idx) {
+                    Ok(page_blocks) => {
+                        let msg = IncomingPage {
+                            page_index: idx,
+                            blocks: page_blocks,
+                        };
+                        if tx.send(msg).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+
+    let book_id = BookId {
+        id: format!("path:{}", path.display()),
+        path: path.display().to_string(),
+        title,
+        format: DocumentFormat::Pdf,
+    };
+    let info = DocumentInfo::from_book_id(&book_id, summary.author.clone());
+    let document = Document::new(info, blocks, chapter_titles);
+    let truncated = target_pages < total_pages_actual;
+    Ok((
+        document,
+        book_id,
+        rx,
+        target_pages,
+        total_pages_actual,
+        truncated,
+    ))
+}
+
 fn run_reader(document: Document, book_id: BookId, selected_index: usize) {
     // Load last location and update initial spine index
     let mut last = load_state(&book_id)
@@ -243,6 +319,46 @@ fn run_reader(document: Document, book_id: BookId, selected_index: usize) {
     last.spine_index = selected_index;
 
     let mut app = ui::app::App::new_with_document(document, last.offset);
+    apply_theme_config(&mut app);
+
+    let current_idx = match app.run() {
+        Ok(idx) => idx,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            0
+        }
+    };
+
+    // Save last location using current page index
+    last.offset = current_idx;
+    let rec = AppStateRecord {
+        book: book_id,
+        last_location: last,
+        bookmarks: vec![],
+    };
+    let _ = save_state(&rec);
+
+    eprintln!("Run with: cargo run -p librarian [path_to_epub]  # default docs/alice.epub");
+}
+
+fn run_reader_streaming(
+    document: Document,
+    book_id: BookId,
+    selected_index: usize,
+    incoming: Receiver<IncomingPage>,
+    total_pages: usize,
+) {
+    // Load last location and update initial spine index
+    let mut last = load_state(&book_id)
+        .map(|r| r.last_location)
+        .unwrap_or(Location {
+            spine_index: 0,
+            offset: 0,
+        });
+    last.spine_index = selected_index;
+
+    let mut app =
+        ui::app::App::new_with_document_streaming(document, last.offset, incoming, total_pages);
     apply_theme_config(&mut app);
 
     let current_idx = match app.run() {

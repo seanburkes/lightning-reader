@@ -28,6 +28,7 @@ pub struct PdfDocument {
     pub truncated: bool,
 }
 
+#[derive(Clone)]
 pub struct PdfSummary {
     pub title: Option<String>,
     pub author: Option<String>,
