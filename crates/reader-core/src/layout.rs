@@ -1,4 +1,5 @@
 use crate::types::Block;
+use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Clone, Copy)]
 pub struct Size {
@@ -30,7 +31,7 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
     let mut pending_chapter_start: Option<usize> = Some(0); // initial chapter starts at page 0
     for block in blocks {
         match block {
-            Block::Paragraph(text) | Block::Quote(text) => {
+            Block::Paragraph(text) => {
                 // If a separator was seen, mark the next content start as a chapter start
                 if let Some(start_idx) = pending_chapter_start.take() {
                     chapter_starts.push(start_idx);
@@ -55,6 +56,29 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
                     }
                 }
                 // blank line between paragraphs
+                current.lines.push(String::new());
+            }
+            Block::Quote(text) => {
+                if let Some(start_idx) = pending_chapter_start.take() {
+                    chapter_starts.push(start_idx);
+                }
+                // Two-space indent; add a rule when there is room
+                let show_rule = size.width >= 16;
+                let prefix = if show_rule { "│ " } else { "  " };
+                let eff_width = size
+                    .width
+                    .saturating_sub(prefix.graphemes(true).count() as u16)
+                    as usize;
+                let lines = wrap_text(text, eff_width.max(4));
+                for line in lines {
+                    let prefixed = format!("{}{}", prefix, line);
+                    current.lines.push(prefixed);
+                    if current.lines.len() as u16 >= size.height {
+                        pages.push(current.clone());
+                        current = Page { lines: Vec::new() };
+                        at_page_index += 1;
+                    }
+                }
                 current.lines.push(String::new());
             }
             Block::Heading(text, _) => {
@@ -115,7 +139,6 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
 }
 
 use unicode_linebreak::{linebreaks, BreakOpportunity};
-use unicode_segmentation::UnicodeSegmentation;
 
 fn wrap_text(text: &str, width: usize) -> Vec<String> {
     let mut out = Vec::new();
