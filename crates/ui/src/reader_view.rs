@@ -97,7 +97,13 @@ impl ReaderView {
         }
     }
 
-    pub fn render(&self, f: &mut Frame<'_>, area: Rect, column_width: u16) {
+    pub fn render(
+        &self,
+        f: &mut Frame<'_>,
+        area: Rect,
+        column_width: u16,
+        highlight: Option<&str>,
+    ) {
         let vchunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(1)])
@@ -254,14 +260,14 @@ impl ReaderView {
                 ])
                 .split(para_area);
             let base = self.current.saturating_sub(self.current % 2);
-            let left_lines = self.page_lines(base);
-            let right_lines = self.page_lines(base + 1);
+            let left_lines = self.page_lines(base, highlight);
+            let right_lines = self.page_lines(base + 1, highlight);
             let left_p = Paragraph::new(left_lines).wrap(Wrap { trim: false });
             let right_p = Paragraph::new(right_lines).wrap(Wrap { trim: false });
             f.render_widget(left_p, spreads[0]);
             f.render_widget(right_p, spreads[2]);
         } else {
-            let lines = self.page_lines(self.current);
+            let lines = self.page_lines(self.current, highlight);
             let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
             f.render_widget(paragraph, para_area);
         }
@@ -412,12 +418,56 @@ impl ReaderView {
         }
     }
 
-    fn page_lines(&self, idx: usize) -> Vec<Line<'_>> {
+    fn page_lines(&self, idx: usize, highlight: Option<&str>) -> Vec<Line<'_>> {
         if let Some(page) = self.pages.get(idx) {
-            page.lines.iter().map(|l| Line::from(l.clone())).collect()
+            page.lines
+                .iter()
+                .map(|l| Self::highlight_line(l, highlight))
+                .collect()
         } else {
             vec![Line::from("")] // empty placeholder for missing spread page
         }
+    }
+
+    fn highlight_line<'a>(line: &'a str, highlight: Option<&str>) -> Line<'a> {
+        let needle = highlight
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("");
+        if needle.is_empty() {
+            return Line::from(line.to_string());
+        }
+        let needle_g: Vec<String> = needle.graphemes(true).map(|g| g.to_lowercase()).collect();
+        let mut spans: Vec<Span<'a>> = Vec::new();
+        let line_g: Vec<&str> = line.graphemes(true).collect();
+        let mut start = 0;
+        let mut i = 0;
+        while i + needle_g.len() <= line_g.len() {
+            let window = &line_g[i..i + needle_g.len()];
+            let matches = window
+                .iter()
+                .zip(needle_g.iter())
+                .all(|(a, b)| a.to_lowercase() == *b);
+            if matches {
+                if start < i {
+                    let plain = line_g[start..i].concat();
+                    spans.push(Span::raw(plain));
+                }
+                let matched = window.concat();
+                spans.push(Span::styled(
+                    matched,
+                    Style::default().bg(Color::Yellow).fg(Color::Black),
+                ));
+                i += needle_g.len();
+                start = i;
+            } else {
+                i += 1;
+            }
+        }
+        if start < line_g.len() {
+            spans.push(Span::raw(line_g[start..].concat()));
+        }
+        Line::from(spans)
     }
 }
 
@@ -456,5 +506,24 @@ mod tests {
         let mut view = ReaderView::new();
         view.pages = vec![page(&["Hello brave", "new world"]), page(&["Unused"])];
         assert_eq!(view.search_forward("brave new"), Some(0));
+    }
+
+    #[test]
+    fn highlight_line_marks_case_insensitive_matches() {
+        let line = ReaderView::highlight_line("Hello World", Some("world"));
+        assert_eq!(line.spans.len(), 2);
+        assert_eq!(line.spans[0].content, "Hello ");
+        assert_eq!(line.spans[1].content, "World");
+        assert_eq!(line.spans[1].style.bg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn highlight_line_marks_multiple_occurrences() {
+        let line = ReaderView::highlight_line("aba ba", Some("ba"));
+        assert_eq!(line.spans.len(), 4); // "a" + "ba" + " " + "ba"
+        assert_eq!(line.spans[1].content, "ba");
+        assert_eq!(line.spans[1].style.bg, Some(Color::Yellow));
+        assert_eq!(line.spans[3].content, "ba");
+        assert_eq!(line.spans[3].style.bg, Some(Color::Yellow));
     }
 }

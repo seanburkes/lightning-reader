@@ -133,7 +133,7 @@ impl App {
                 height = size.height.saturating_sub(2);
                 let inner = ReaderView::inner_size(size, width, view.two_pane);
                 view.reflow(&self.blocks, inner);
-                view.render(f, size, width);
+                view.render(f, size, width, self.last_search.as_deref());
             });
             execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
             return Ok(view.current);
@@ -154,13 +154,13 @@ impl App {
                 }
                 match self.mode {
                     Mode::Reader => {
-                        view.render(f, size, width);
+                        view.render(f, size, width, self.last_search.as_deref());
                     }
                     Mode::Toc => {
                         if let Some(t) = &self.toc {
                             t.render(f, size, width);
                         } else {
-                            view.render(f, size, width);
+                            view.render(f, size, width, self.last_search.as_deref());
                         }
                     }
                 }
