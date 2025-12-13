@@ -34,11 +34,12 @@ fn main() {
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(1);
+        let backend = reader_core::pdf::PdfBackendKind::from_env();
         let prefetch_window = env::var("LIBRARIAN_PDF_PREFETCH_PAGES")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(2);
-        match stream_pdf(path, page_limit, initial_pages) {
+        match stream_pdf(path, page_limit, initial_pages, backend) {
             Ok((document, book_id, rx, prefetch_tx, target_pages, actual_pages, truncated)) => {
                 if truncated {
                     eprintln!(
@@ -247,6 +248,7 @@ fn stream_pdf(
     path: &Path,
     page_limit: Option<usize>,
     initial_pages: usize,
+    backend: reader_core::pdf::PdfBackendKind,
 ) -> Result<
     (
         Document,
@@ -259,7 +261,7 @@ fn stream_pdf(
     ),
     reader_core::pdf::PdfError,
 > {
-    let loader = PdfLoader::open(path)?;
+    let loader = PdfLoader::open_with_backend(path, backend)?;
     let total_pages_actual = loader.page_count();
     let target_pages = page_limit
         .and_then(|m| {

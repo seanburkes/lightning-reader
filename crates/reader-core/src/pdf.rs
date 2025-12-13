@@ -1,7 +1,11 @@
-use std::{num::NonZeroUsize, path::Path, sync::Mutex};
+use std::{env, num::NonZeroUsize, path::Path, sync::Mutex};
 
 use lopdf::Document as LoDocument;
 use lru::LruCache;
+use pdf::{
+    content::Op,
+    file::{File as PdfFile, FileOptions, NoCache, NoLog},
+};
 use thiserror::Error;
 
 use crate::types::Block;
@@ -18,6 +22,8 @@ pub enum PdfError {
     Empty,
     #[error("Requested page {0} is out of bounds")]
     InvalidPage(usize),
+    #[error("PDF parse error (pdf-rs): {0}")]
+    PdfRs(String),
 }
 
 pub struct PdfDocument {
@@ -35,15 +41,82 @@ pub struct PdfSummary {
     pub page_count: usize,
 }
 
-pub struct PdfLoader {
+struct PdfRsBackend {
+    file: PdfRsFile,
+    summary: PdfSummary,
+}
+
+type PdfRsFile = PdfFile<Vec<u8>, NoCache, NoCache, NoLog>;
+
+struct LopdfBackend {
     doc: LoDocument,
     pages: Vec<u32>,
     summary: PdfSummary,
-    cache: Mutex<LruCache<usize, Vec<Block>>>,
 }
 
-impl PdfLoader {
-    pub fn open(path: &Path) -> Result<Self, PdfError> {
+impl PdfBackendKind {
+    pub fn from_env() -> Self {
+        match env::var("LIBRARIAN_PDF_BACKEND")
+            .unwrap_or_default()
+            .to_lowercase()
+            .as_str()
+        {
+            "lopdf" => PdfBackendKind::Lopdf,
+            "pdf" | "pdf-rs" => PdfBackendKind::PdfRs,
+            _ => PdfBackendKind::PdfRs,
+        }
+    }
+}
+
+impl PdfRsBackend {
+    fn open(path: &Path) -> Result<Self, PdfError> {
+        let file: PdfRsFile = FileOptions::uncached()
+            .open(path)
+            .map_err(|e| PdfError::PdfRs(e.to_string()))?;
+        if file.trailer.encrypt_dict.is_some() {
+            return Err(PdfError::Encrypted);
+        }
+        let page_count = file.num_pages() as usize;
+        if page_count == 0 {
+            return Err(PdfError::Empty);
+        }
+        let (title, author) = pdf_rs_metadata(&file);
+        Ok(Self {
+            file,
+            summary: PdfSummary {
+                title,
+                author,
+                page_count,
+            },
+        })
+    }
+
+    fn load_page(&self, page_index: usize) -> Result<Vec<Block>, PdfError> {
+        if page_index >= self.summary.page_count {
+            return Err(PdfError::InvalidPage(page_index));
+        }
+        let page = self
+            .file
+            .get_page(page_index as u32)
+            .map_err(|e| PdfError::PdfRs(e.to_string()))?;
+        let mut text = String::new();
+        if let Some(content) = &page.contents {
+            let resolver = self.file.resolver();
+            let ops = content
+                .operations(&resolver)
+                .map_err(|e| PdfError::PdfRs(e.to_string()))?;
+            text = ops_to_text(&ops);
+        }
+        let mut blocks = page_text_to_blocks(&text);
+        if blocks.is_empty() {
+            blocks.push(Block::Paragraph("[empty page]".into()));
+        }
+        Ok(blocks)
+    }
+}
+
+impl LopdfBackend {
+    fn open(path: &Path) -> Result<Self, PdfError> {
         let doc = LoDocument::load(path)?;
         if doc.is_encrypted() {
             return Err(PdfError::Encrypted);
@@ -63,22 +136,10 @@ impl PdfLoader {
                 author,
                 page_count,
             },
-            cache: Mutex::new(LruCache::new(NonZeroUsize::new(8).unwrap())),
         })
     }
 
-    pub fn summary(&self) -> &PdfSummary {
-        &self.summary
-    }
-
-    pub fn page_count(&self) -> usize {
-        self.pages.len()
-    }
-
-    pub fn load_page(&self, page_index: usize) -> Result<Vec<Block>, PdfError> {
-        if let Some(cached) = self.cache.lock().unwrap().get(&page_index).cloned() {
-            return Ok(cached);
-        }
+    fn load_page(&self, page_index: usize) -> Result<Vec<Block>, PdfError> {
         let page_num = *self
             .pages
             .get(page_index)
@@ -88,6 +149,73 @@ impl PdfLoader {
         if blocks.is_empty() {
             blocks.push(Block::Paragraph("[empty page]".into()));
         }
+        Ok(blocks)
+    }
+}
+
+pub struct PdfLoader {
+    backend: Backend,
+    summary: PdfSummary,
+    cache: Mutex<LruCache<usize, Vec<Block>>>,
+}
+
+#[derive(Clone, Copy)]
+pub enum PdfBackendKind {
+    PdfRs,
+    Lopdf,
+}
+
+enum Backend {
+    PdfRs(PdfRsBackend),
+    Lopdf(LopdfBackend),
+}
+
+impl PdfLoader {
+    pub fn open(path: &Path) -> Result<Self, PdfError> {
+        let backend = PdfBackendKind::from_env();
+        Self::open_with_backend(path, backend)
+    }
+
+    pub fn open_with_backend(path: &Path, backend: PdfBackendKind) -> Result<Self, PdfError> {
+        match backend {
+            PdfBackendKind::PdfRs => {
+                let backend = PdfRsBackend::open(path)?;
+                Ok(Self {
+                    summary: backend.summary.clone(),
+                    backend: Backend::PdfRs(backend),
+                    cache: Mutex::new(LruCache::new(NonZeroUsize::new(8).unwrap())),
+                })
+            }
+            PdfBackendKind::Lopdf => {
+                let backend = LopdfBackend::open(path)?;
+                Ok(Self {
+                    summary: backend.summary.clone(),
+                    backend: Backend::Lopdf(backend),
+                    cache: Mutex::new(LruCache::new(NonZeroUsize::new(8).unwrap())),
+                })
+            }
+        }
+    }
+
+    pub fn summary(&self) -> &PdfSummary {
+        &self.summary
+    }
+
+    pub fn page_count(&self) -> usize {
+        match &self.backend {
+            Backend::PdfRs(b) => b.summary.page_count,
+            Backend::Lopdf(b) => b.pages.len(),
+        }
+    }
+
+    pub fn load_page(&self, page_index: usize) -> Result<Vec<Block>, PdfError> {
+        if let Some(cached) = self.cache.lock().unwrap().get(&page_index).cloned() {
+            return Ok(cached);
+        }
+        let blocks = match &self.backend {
+            Backend::PdfRs(b) => b.load_page(page_index)?,
+            Backend::Lopdf(b) => b.load_page(page_index)?,
+        };
         self.cache.lock().unwrap().put(page_index, blocks.clone());
         Ok(blocks)
     }
@@ -107,11 +235,19 @@ impl PdfLoader {
 }
 
 pub fn load_pdf(path: &Path) -> Result<PdfDocument, PdfError> {
-    load_pdf_with_limit(path, None)
+    load_pdf_with_backend(path, None, PdfBackendKind::from_env())
 }
 
 pub fn load_pdf_with_limit(path: &Path, max_pages: Option<usize>) -> Result<PdfDocument, PdfError> {
-    let loader = PdfLoader::open(path)?;
+    load_pdf_with_backend(path, max_pages, PdfBackendKind::from_env())
+}
+
+pub fn load_pdf_with_backend(
+    path: &Path,
+    max_pages: Option<usize>,
+    backend: PdfBackendKind,
+) -> Result<PdfDocument, PdfError> {
+    let loader = PdfLoader::open_with_backend(path, backend)?;
     let total_pages = loader.page_count();
     let to_load = max_pages
         .and_then(|m| if m == 0 { None } else { Some(m) })
@@ -212,4 +348,50 @@ fn object_to_string(obj: &lopdf::Object) -> Option<String> {
         lopdf::Object::Name(n) => Some(String::from_utf8_lossy(n).to_string()),
         _ => None,
     }
+}
+
+fn pdf_rs_metadata(doc: &PdfRsFile) -> (Option<String>, Option<String>) {
+    let title = doc
+        .trailer
+        .info_dict
+        .as_ref()
+        .and_then(|info| info.title.as_ref().map(|s| s.to_string_lossy()));
+    let author = doc
+        .trailer
+        .info_dict
+        .as_ref()
+        .and_then(|info| info.author.as_ref().map(|s| s.to_string_lossy()));
+    (title, author)
+}
+
+fn ops_to_text(ops: &[Op]) -> String {
+    let mut out = String::new();
+    for op in ops {
+        match op {
+            Op::TextDraw { text } => {
+                out.push_str(&text.to_string_lossy());
+                out.push(' ');
+            }
+            Op::TextDrawAdjusted { array } => {
+                for item in array {
+                    match item {
+                        pdf::content::TextDrawAdjusted::Text(t) => {
+                            out.push_str(&t.to_string_lossy());
+                        }
+                        pdf::content::TextDrawAdjusted::Spacing(v) => {
+                            if *v < -50.0 {
+                                out.push(' ');
+                            }
+                        }
+                    }
+                }
+                out.push(' ');
+            }
+            Op::TextNewline | Op::MoveTextPosition { .. } => {
+                out.push('\n');
+            }
+            _ => {}
+        }
+    }
+    out
 }
