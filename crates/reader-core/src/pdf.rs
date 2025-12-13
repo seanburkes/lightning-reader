@@ -5,6 +5,7 @@ use lru::LruCache;
 use pdf::{
     content::Op,
     file::{File as PdfFile, FileOptions, NoCache, NoLog},
+    object::Resolve,
 };
 use thiserror::Error;
 
@@ -31,6 +32,7 @@ pub struct PdfDocument {
     pub author: Option<String>,
     pub blocks: Vec<Block>,
     pub chapter_titles: Vec<String>,
+    pub outlines: Vec<OutlineEntry>,
     pub truncated: bool,
 }
 
@@ -113,6 +115,45 @@ impl PdfRsBackend {
         }
         Ok(blocks)
     }
+
+    fn outlines(&self) -> Result<Vec<OutlineEntry>, PdfError> {
+        let mut out = Vec::new();
+        let catalog = &self.file.trailer.root;
+        if let Some(outlines) = &catalog.outlines {
+            let resolver = self.file.resolver();
+            if let Some(first) = &outlines.first {
+                self.walk_outline_item(first, 0, &resolver, &mut out)?;
+            }
+        }
+        Ok(out)
+    }
+
+    fn walk_outline_item(
+        &self,
+        item_ref: &pdf::object::Ref<pdf::object::OutlineItem>,
+        depth: usize,
+        resolver: &impl Resolve,
+        out: &mut Vec<OutlineEntry>,
+    ) -> Result<(), PdfError> {
+        let item = resolver
+            .get(*item_ref)
+            .map_err(|e| PdfError::PdfRs(e.to_string()))?;
+        if let Some(title) = &item.title {
+            if let Some(dest_page) = outline_dest_to_page(resolver, &self.file, &item.dest) {
+                out.push(OutlineEntry {
+                    title: title.to_string_lossy(),
+                    page_index: dest_page,
+                });
+            }
+        }
+        if let Some(first) = &item.first {
+            self.walk_outline_item(first, depth + 1, resolver, out)?;
+        }
+        if let Some(next) = &item.next {
+            self.walk_outline_item(next, depth, resolver, out)?;
+        }
+        Ok(())
+    }
 }
 
 impl LopdfBackend {
@@ -170,6 +211,12 @@ enum Backend {
     Lopdf(LopdfBackend),
 }
 
+#[derive(Clone)]
+pub struct OutlineEntry {
+    pub title: String,
+    pub page_index: usize,
+}
+
 impl PdfLoader {
     pub fn open(path: &Path) -> Result<Self, PdfError> {
         let backend = PdfBackendKind::from_env();
@@ -205,6 +252,13 @@ impl PdfLoader {
         match &self.backend {
             Backend::PdfRs(b) => b.summary.page_count,
             Backend::Lopdf(b) => b.pages.len(),
+        }
+    }
+
+    pub fn outlines(&self) -> Result<Vec<OutlineEntry>, PdfError> {
+        match &self.backend {
+            Backend::PdfRs(b) => b.outlines(),
+            Backend::Lopdf(_) => Ok(Vec::new()),
         }
     }
 
@@ -282,6 +336,7 @@ pub fn load_pdf_with_backend(
         author: loader.summary.author.clone(),
         blocks,
         chapter_titles,
+        outlines: loader.outlines().unwrap_or_default(),
         truncated,
     })
 }
@@ -415,4 +470,27 @@ fn page_title_from_blocks(blocks: &[Block]) -> Option<String> {
         Block::Heading(t, _) => Some(t.trim().to_string()),
         _ => None,
     })
+}
+
+fn outline_dest_to_page(
+    resolver: &impl Resolve,
+    file: &PdfRsFile,
+    dest: &Option<pdf::primitive::Primitive>,
+) -> Option<usize> {
+    let dest = dest.as_ref()?;
+    let resolved = dest.clone().resolve(resolver).ok()?;
+    if let Ok(arr) = resolved.as_array() {
+        if let Some(page_ref) = arr.get(0) {
+            if let Ok(page_ref) = page_ref.clone().into_reference() {
+                for (idx, page) in file.pages().enumerate() {
+                    if let Ok(page) = page {
+                        if page.get_ref().get_inner() == page_ref {
+                            return Some(idx);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
 }
