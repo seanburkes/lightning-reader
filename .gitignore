@@ -37,3 +37,7 @@ Thumbs.db
 # Generated docs or distribution bundles (if any)
 /dist/
 **/dist/
+
+# Copyright material - don't commit PDFs or EPUBs
+*.pdf
+*.epub
