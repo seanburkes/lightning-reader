@@ -116,8 +116,14 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
                 if let Some(start_idx) = pending_chapter_start.take() {
                     chapter_starts.push(start_idx);
                 }
+                let show_rule = size.width >= 12;
+                let prefix = if show_rule { "│ " } else { "  " };
+                let prefix_width = prefix.graphemes(true).count() as u16;
+                let eff_width = size.width.saturating_sub(prefix_width) as usize;
                 for line in text.lines() {
-                    current.lines.push(line.to_string());
+                    let clipped = truncate_graphemes(line, eff_width.max(4));
+                    let prefixed = format!("{}{}", prefix, clipped);
+                    current.lines.push(prefixed);
                     if current.lines.len() as u16 >= size.height {
                         pages.push(current.clone());
                         current = Page { lines: Vec::new() };
