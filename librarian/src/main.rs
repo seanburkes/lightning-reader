@@ -33,7 +33,7 @@ fn main() {
         let initial_pages = env::var("LIBRARIAN_PDF_INITIAL_PAGES")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(3);
+            .unwrap_or(1);
         let prefetch_window = env::var("LIBRARIAN_PDF_PREFETCH_PAGES")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
@@ -296,14 +296,13 @@ fn stream_pdf(
         let loader = loader;
         thread::spawn(move || {
             let mut loaded: HashSet<usize> = (0..start_at).collect();
-            let mut pending: VecDeque<usize> = VecDeque::new();
-            let mut next_seq = start_at;
+            let mut pending: VecDeque<usize> = (start_at..target_pages).collect();
             loop {
                 while let Ok(req) = prefetch_rx.try_recv() {
                     let end = (req.start + req.window).min(target_pages);
                     for idx in req.start..end {
                         if loaded.insert(idx) {
-                            pending.push_back(idx);
+                            pending.push_front(idx);
                         }
                     }
                 }
@@ -322,23 +321,13 @@ fn stream_pdf(
                     }
                     continue;
                 }
-                while next_seq < target_pages && loaded.contains(&next_seq) {
-                    next_seq += 1;
+                // Nothing pending; wait briefly for any new requests, otherwise exit.
+                if prefetch_rx
+                    .recv_timeout(Duration::from_millis(200))
+                    .is_err()
+                {
+                    break;
                 }
-                if next_seq >= target_pages {
-                    // Wait briefly for any remaining requests before exiting
-                    if prefetch_rx
-                        .recv_timeout(Duration::from_millis(200))
-                        .is_err()
-                    {
-                        break;
-                    } else {
-                        continue;
-                    }
-                }
-                pending.push_back(next_seq);
-                loaded.insert(next_seq);
-                next_seq += 1;
             }
         });
     }
