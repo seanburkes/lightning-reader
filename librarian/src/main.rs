@@ -1,8 +1,10 @@
 use std::{
+    collections::{HashSet, VecDeque},
     env,
     path::Path,
-    sync::mpsc::{channel, Receiver},
+    sync::mpsc::{channel, Receiver, Sender},
     thread,
+    time::Duration,
 };
 
 use directories::ProjectDirs;
@@ -12,7 +14,7 @@ use reader_core::{
     state::{load_state, save_state},
     types::{AppStateRecord, BookId, Document, DocumentFormat, DocumentInfo, Location},
 };
-use ui::app::IncomingPage;
+use ui::app::{IncomingPage, PrefetchRequest};
 
 fn main() {
     // Accept optional EPUB/PDF path: default to docs/alice.epub
@@ -32,15 +34,27 @@ fn main() {
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(3);
+        let prefetch_window = env::var("LIBRARIAN_PDF_PREFETCH_PAGES")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(2);
         match stream_pdf(path, page_limit, initial_pages) {
-            Ok((document, book_id, rx, target_pages, actual_pages, truncated)) => {
+            Ok((document, book_id, rx, prefetch_tx, target_pages, actual_pages, truncated)) => {
                 if truncated {
                     eprintln!(
                         "Page limit applied: loading up to {} of {} pages (set LIBRARIAN_PDF_PAGE_LIMIT=0 to load all)",
                         target_pages, actual_pages
                     );
                 }
-                run_reader_streaming(document, book_id, 0, rx, target_pages);
+                run_reader_streaming(
+                    document,
+                    book_id,
+                    0,
+                    rx,
+                    prefetch_tx,
+                    actual_pages,
+                    prefetch_window,
+                );
                 return;
             }
             Err(reader_core::pdf::PdfError::Encrypted) => {
@@ -234,7 +248,15 @@ fn stream_pdf(
     page_limit: Option<usize>,
     initial_pages: usize,
 ) -> Result<
-    (Document, BookId, Receiver<IncomingPage>, usize, usize, bool),
+    (
+        Document,
+        BookId,
+        Receiver<IncomingPage>,
+        std::sync::mpsc::Sender<PrefetchRequest>,
+        usize,
+        usize,
+        bool,
+    ),
     reader_core::pdf::PdfError,
 > {
     let loader = PdfLoader::open(path)?;
@@ -268,23 +290,55 @@ fn stream_pdf(
     }
 
     let (tx, rx) = channel();
+    let (prefetch_tx, prefetch_rx) = channel::<PrefetchRequest>();
     if initial < target_pages {
         let start_at = initial;
         let loader = loader;
         thread::spawn(move || {
-            for idx in start_at..target_pages {
-                match loader.load_page(idx) {
-                    Ok(page_blocks) => {
-                        let msg = IncomingPage {
-                            page_index: idx,
-                            blocks: page_blocks,
-                        };
-                        if tx.send(msg).is_err() {
-                            break;
+            let mut loaded: HashSet<usize> = (0..start_at).collect();
+            let mut pending: VecDeque<usize> = VecDeque::new();
+            let mut next_seq = start_at;
+            loop {
+                while let Ok(req) = prefetch_rx.try_recv() {
+                    let end = (req.start + req.window).min(target_pages);
+                    for idx in req.start..end {
+                        if loaded.insert(idx) {
+                            pending.push_back(idx);
                         }
                     }
-                    Err(_) => break,
                 }
+                if let Some(idx) = pending.pop_front() {
+                    match loader.load_page(idx) {
+                        Ok(page_blocks) => {
+                            let msg = IncomingPage {
+                                page_index: idx,
+                                blocks: page_blocks,
+                            };
+                            if tx.send(msg).is_err() {
+                                return;
+                            }
+                        }
+                        Err(_) => {}
+                    }
+                    continue;
+                }
+                while next_seq < target_pages && loaded.contains(&next_seq) {
+                    next_seq += 1;
+                }
+                if next_seq >= target_pages {
+                    // Wait briefly for any remaining requests before exiting
+                    if prefetch_rx
+                        .recv_timeout(Duration::from_millis(200))
+                        .is_err()
+                    {
+                        break;
+                    } else {
+                        continue;
+                    }
+                }
+                pending.push_back(next_seq);
+                loaded.insert(next_seq);
+                next_seq += 1;
             }
         });
     }
@@ -302,6 +356,7 @@ fn stream_pdf(
         document,
         book_id,
         rx,
+        prefetch_tx,
         target_pages,
         total_pages_actual,
         truncated,
@@ -346,7 +401,9 @@ fn run_reader_streaming(
     book_id: BookId,
     selected_index: usize,
     incoming: Receiver<IncomingPage>,
+    prefetch_tx: Sender<PrefetchRequest>,
     total_pages: usize,
+    prefetch_window: usize,
 ) {
     // Load last location and update initial spine index
     let mut last = load_state(&book_id)
@@ -357,8 +414,14 @@ fn run_reader_streaming(
         });
     last.spine_index = selected_index;
 
-    let mut app =
-        ui::app::App::new_with_document_streaming(document, last.offset, incoming, total_pages);
+    let mut app = ui::app::App::new_with_document_streaming(
+        document,
+        last.offset,
+        incoming,
+        total_pages,
+        prefetch_tx,
+        prefetch_window,
+    );
     apply_theme_config(&mut app);
 
     let current_idx = match app.run() {
