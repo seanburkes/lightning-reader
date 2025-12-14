@@ -1,75 +1,86 @@
 use crate::types::Block;
-use kuchiki::traits::*;
+use kuchiki::{traits::*, NodeRef};
 
 pub fn html_to_blocks(html: &str) -> Vec<Block> {
     let parser = kuchiki::parse_html().one(html.to_string());
     let mut blocks = Vec::new();
 
-    fn collect(node: &kuchiki::NodeRef, out: &mut Vec<Block>) {
-        for child in node.children() {
-            if let Some(el) = child.as_element() {
-                let tag = el.name.local.to_lowercase();
-                if tag.len() == 2 && tag.starts_with('h') {
-                    if let Ok(level) = tag[1..].parse::<u8>() {
-                        let text = child.text_contents().trim().to_string();
-                        if !text.is_empty() {
-                            out.push(Block::Heading(text, level.min(6)));
-                            continue;
-                        }
-                    }
+    fn heading_level(tag: &str) -> Option<u8> {
+        (tag.len() == 2 && tag.starts_with('h'))
+            .then(|| tag[1..].parse::<u8>().ok())
+            .flatten()
+            .map(|lvl| lvl.min(6))
+    }
+
+    fn extract_block(node: &NodeRef) -> Option<Block> {
+        let el = node.as_element()?;
+        let tag = el.name.local.to_lowercase();
+        if let Some(level) = heading_level(&tag) {
+            let text = node.text_contents().trim().to_string();
+            return if text.is_empty() {
+                None
+            } else {
+                Some(Block::Heading(text, level))
+            };
+        }
+        match tag.as_str() {
+            "p" => {
+                let text = node.text_contents().trim().to_string();
+                if text.is_empty() {
+                    None
+                } else {
+                    Some(Block::Paragraph(text))
                 }
-                match tag.as_str() {
-                    "p" => {
-                        let text = child.text_contents().trim().to_string();
-                        if !text.is_empty() {
-                            out.push(Block::Paragraph(text));
-                        }
-                        continue;
-                    }
-                    "blockquote" => {
-                        let text = child.text_contents().trim().to_string();
-                        if !text.is_empty() {
-                            out.push(Block::Quote(text));
-                        }
-                        continue;
-                    }
-                    "ul" | "ol" => {
-                        let mut items = Vec::new();
-                        for li in child.children() {
-                            if let Some(li_el) = li.as_element() {
-                                if li_el.name.local.as_ref() == "li" {
-                                    let text = li.text_contents().trim().to_string();
-                                    if !text.is_empty() {
-                                        items.push(text);
-                                    }
-                                }
+            }
+            "blockquote" => {
+                let text = node.text_contents().trim().to_string();
+                if text.is_empty() {
+                    None
+                } else {
+                    Some(Block::Quote(text))
+                }
+            }
+            "ul" | "ol" => {
+                let mut items = Vec::new();
+                for li in node.children() {
+                    if let Some(li_el) = li.as_element() {
+                        if li_el.name.local.as_ref() == "li" {
+                            let text = li.text_contents().trim().to_string();
+                            if !text.is_empty() {
+                                items.push(text);
                             }
                         }
-                        if !items.is_empty() {
-                            out.push(Block::List(items));
-                        }
-                        continue;
                     }
-                    "pre" => {
-                        let mut lang: Option<String> = None;
-                        let text = child
-                            .select("code")
-                            .ok()
-                            .and_then(|mut iter| iter.next())
-                            .map(|code| {
-                                lang = code.attributes.borrow().get("class").map(|s| s.to_string());
-                                code.text_contents()
-                            })
-                            .unwrap_or_else(|| child.text_contents());
-                        out.push(Block::Code { lang, text });
-                        continue;
-                    }
-                    "img" => {
-                        out.push(Block::Paragraph("[image]".into()));
-                        continue;
-                    }
-                    _ => {}
                 }
+                if items.is_empty() {
+                    None
+                } else {
+                    Some(Block::List(items))
+                }
+            }
+            "pre" => {
+                let mut lang: Option<String> = None;
+                let text = node
+                    .select("code")
+                    .ok()
+                    .and_then(|mut iter| iter.next())
+                    .map(|code| {
+                        lang = code.attributes.borrow().get("class").map(|s| s.to_string());
+                        code.text_contents()
+                    })
+                    .unwrap_or_else(|| node.text_contents());
+                Some(Block::Code { lang, text })
+            }
+            "img" => Some(Block::Paragraph("[image]".into())),
+            _ => None,
+        }
+    }
+
+    fn collect(node: &NodeRef, out: &mut Vec<Block>) {
+        for child in node.children() {
+            if let Some(block) = extract_block(&child) {
+                out.push(block);
+                continue;
             }
             collect(&child, out);
         }
