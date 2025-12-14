@@ -367,7 +367,7 @@ fn page_text_to_blocks(text: &str) -> Vec<Block> {
 fn flush_para(current: &mut String, out: &mut Vec<Block>) {
     let cleaned = current.trim();
     if !cleaned.is_empty() {
-        out.push(Block::Paragraph(cleaned.to_string()));
+        out.push(Block::Paragraph(annotate_links(cleaned)));
     }
     current.clear();
 }
@@ -405,6 +405,26 @@ fn object_to_string(obj: &lopdf::Object) -> Option<String> {
         lopdf::Object::Name(n) => Some(String::from_utf8_lossy(n).to_string()),
         _ => None,
     }
+}
+
+fn annotate_links(s: &str) -> String {
+    s.split_whitespace()
+        .map(|tok| {
+            let lower = tok.to_ascii_lowercase();
+            let is_url = lower.starts_with("http://")
+                || lower.starts_with("https://")
+                || lower.starts_with("www.");
+            let is_anchor = tok.starts_with('#');
+            if is_url {
+                format!("{} [link:{}]", tok, tok)
+            } else if is_anchor {
+                format!("{} [anchor:{}]", tok, tok.trim_start_matches('#'))
+            } else {
+                tok.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn pdf_rs_metadata(doc: &PdfRsFile) -> (Option<String>, Option<String>) {
