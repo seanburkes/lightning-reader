@@ -111,11 +111,18 @@ impl PdfRsBackend {
             text = ops_to_text(&ops);
         }
         let mut blocks = page_text_to_blocks(&text);
-        let links = extract_links(&page, &self.file.resolver());
+        let resolver = self.file.resolver();
+        let links = extract_links(&page, &resolver);
         if !links.is_empty() {
             blocks.push(Block::Paragraph(String::new()));
             for l in links {
                 blocks.push(Block::Paragraph(l));
+            }
+        }
+        let images = extract_images(&page, &resolver);
+        if !images.is_empty() {
+            for img in images {
+                blocks.push(Block::Paragraph(img));
             }
         }
         if blocks.is_empty() {
@@ -609,4 +616,29 @@ fn pdf_prim_to_string(p: &PdfPrimitive) -> Option<String> {
         return Some(String::from_utf8_lossy(name.as_bytes()).to_string());
     }
     None
+}
+
+fn extract_images(page: &pdf::object::Page, resolver: &impl Resolve) -> Vec<String> {
+    let mut images = Vec::new();
+    if let Ok(resources) = page.resources() {
+        for (name, obj) in &resources.xobjects {
+            if let Ok(xobj) = resolver.get(*obj) {
+                if let pdf::object::XObject::Image(img) = &*xobj {
+                    let w = img.width as i64;
+                    let h = img.height as i64;
+                    let label = match (w, h) {
+                        (w, h) if w > 0 && h > 0 => format!(
+                            "[image: {} ({}x{})]",
+                            String::from_utf8_lossy(name.as_bytes()),
+                            w,
+                            h
+                        ),
+                        _ => format!("[image: {}]", String::from_utf8_lossy(name.as_bytes())),
+                    };
+                    images.push(label);
+                }
+            }
+        }
+    }
+    images
 }
