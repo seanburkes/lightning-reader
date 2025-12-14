@@ -6,6 +6,7 @@ use pdf::{
     content::Op,
     file::{File as PdfFile, FileOptions, NoCache, NoLog},
     object::Resolve,
+    primitive::Primitive as PdfPrimitive,
 };
 use thiserror::Error;
 
@@ -110,6 +111,13 @@ impl PdfRsBackend {
             text = ops_to_text(&ops);
         }
         let mut blocks = page_text_to_blocks(&text);
+        let links = extract_links(&page, &self.file.resolver());
+        if !links.is_empty() {
+            blocks.push(Block::Paragraph(String::new()));
+            for l in links {
+                blocks.push(Block::Paragraph(l));
+            }
+        }
         if blocks.is_empty() {
             blocks.push(Block::Paragraph("[empty page]".into()));
         }
@@ -511,6 +519,56 @@ fn outline_dest_to_page(
                 }
             }
         }
+    }
+    None
+}
+
+fn extract_links(page: &pdf::object::Page, resolver: &impl Resolve) -> Vec<String> {
+    let mut links = Vec::new();
+    if let Some(annots_prim) = page.other.get("Annots") {
+        if let Ok(PdfPrimitive::Array(arr)) = annots_prim.clone().resolve(resolver) {
+            for ann in arr {
+                if let Ok(dict) = ann
+                    .clone()
+                    .resolve(resolver)
+                    .and_then(|p| p.into_dictionary())
+                {
+                    let is_link = dict
+                        .get("Subtype")
+                        .and_then(|p| p.as_name().ok())
+                        .map(|n| n.as_bytes() == b"Link")
+                        .unwrap_or(false);
+                    if !is_link {
+                        continue;
+                    }
+                    if let Some(action) = dict.get("A") {
+                        if let Ok(action_dict) = action
+                            .clone()
+                            .resolve(resolver)
+                            .and_then(|p| p.into_dictionary())
+                        {
+                            if let Some(uri) = action_dict.get("URI").and_then(pdf_prim_to_string) {
+                                links.push(format!("[link] {}", uri));
+                                continue;
+                            }
+                        }
+                    }
+                    if let Some(dest) = dict.get("Dest").and_then(pdf_prim_to_string) {
+                        links.push(format!("[anchor] {}", dest));
+                    }
+                }
+            }
+        }
+    }
+    links
+}
+
+fn pdf_prim_to_string(p: &PdfPrimitive) -> Option<String> {
+    if let Ok(s) = p.as_string() {
+        return Some(s.to_string_lossy());
+    }
+    if let Ok(name) = p.as_name() {
+        return Some(String::from_utf8_lossy(name.as_bytes()).to_string());
     }
     None
 }
