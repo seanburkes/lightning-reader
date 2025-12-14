@@ -7,7 +7,6 @@ use std::{
     time::Duration,
 };
 
-use directories::ProjectDirs;
 use reader_core::{
     epub::EpubBook,
     pdf::PdfLoader,
@@ -436,9 +435,15 @@ fn run_reader_streaming(
 }
 
 fn apply_theme_config(app: &mut ui::app::App) {
-    // Load theme from ~/.config/librarian/config.toml
-    if let Some(proj) = ProjectDirs::from("com", "sean", "librarian") {
-        let cfg_path = proj.config_dir().join("config.toml");
+    // Load theme from primary config root with legacy fallbacks
+    let mut candidates = Vec::new();
+    if let Some(dir) = reader_core::config::config_root() {
+        candidates.push(dir.join("config.toml"));
+    }
+    for legacy in reader_core::config::legacy_config_roots() {
+        candidates.push(legacy.join("config.toml"));
+    }
+    for cfg_path in candidates {
         if let Ok(text) = std::fs::read_to_string(&cfg_path) {
             if let Ok(value) = toml::from_str::<toml::Value>(&text) {
                 if let Some(theme) = value.get("theme").and_then(|v| v.as_table()) {
@@ -531,6 +536,7 @@ fn apply_theme_config(app: &mut ui::app::App) {
                     }
                 }
             }
+            break;
         }
     }
 }

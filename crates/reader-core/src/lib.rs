@@ -1,3 +1,4 @@
+pub mod config;
 pub mod epub;
 pub mod layout;
 pub mod nav;

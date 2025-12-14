@@ -1,20 +1,37 @@
-use crate::types::{AppStateRecord, BookId};
-use directories::ProjectDirs;
+use crate::{
+    config,
+    types::{AppStateRecord, BookId},
+};
 use serde_json;
 use std::{fs, io::Write, path::PathBuf};
 
 pub fn config_dir() -> Option<PathBuf> {
-    ProjectDirs::from("org", "sean", "librarian").map(|p| p.config_dir().to_path_buf())
+    config::config_root()
+}
+
+fn state_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(primary) = config::config_root() {
+        paths.push(primary.join("state.json"));
+    }
+    for legacy in config::legacy_config_roots() {
+        paths.push(legacy.join("state.json"));
+    }
+    paths
 }
 
 pub fn load_state(book: &BookId) -> Option<AppStateRecord> {
-    let dir = config_dir()?;
-    let path = dir.join("state.json");
-    let data = fs::read(path).ok()?;
-    let records: Vec<AppStateRecord> = serde_json::from_slice(&data).ok()?;
-    records
-        .into_iter()
-        .find(|r| r.book.id == book.id || r.book.path == book.path)
+    for path in state_paths() {
+        let data = fs::read(&path).ok()?;
+        let records: Vec<AppStateRecord> = serde_json::from_slice(&data).ok()?;
+        if let Some(rec) = records
+            .into_iter()
+            .find(|r| r.book.id == book.id || r.book.path == book.path)
+        {
+            return Some(rec);
+        }
+    }
+    None
 }
 
 pub fn save_state(record: &AppStateRecord) -> std::io::Result<()> {

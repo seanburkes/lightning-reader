@@ -11,7 +11,6 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use dirs::config_dir;
 use ratatui::{
     prelude::*,
     widgets::{Block as UiBlock, Borders, Clear, Paragraph, Wrap},
@@ -561,13 +560,25 @@ impl App {
 }
 
 fn settings_path() -> Option<PathBuf> {
-    config_dir().map(|dir| dir.join("lightning-librarian").join("settings.toml"))
+    reader_core::config::config_root().map(|dir| dir.join("settings.toml"))
+}
+
+fn legacy_settings_paths() -> Vec<PathBuf> {
+    reader_core::config::legacy_config_roots()
+        .into_iter()
+        .map(|dir| dir.join("settings.toml"))
+        .collect()
 }
 
 fn load_settings() -> (bool, bool) {
     let mut justify = false;
     let mut two_pane = false;
-    if let Some(path) = settings_path() {
+    let mut candidates = Vec::new();
+    if let Some(primary) = settings_path() {
+        candidates.push(primary);
+    }
+    candidates.extend(legacy_settings_paths());
+    for path in candidates {
         if let Ok(contents) = fs::read_to_string(path) {
             for line in contents.lines() {
                 if let Some(val) = line.strip_prefix("justify=") {
@@ -576,13 +587,15 @@ fn load_settings() -> (bool, bool) {
                     two_pane = val.trim().eq_ignore_ascii_case("true");
                 }
             }
+            break;
         }
     }
     (justify, two_pane)
 }
 
 fn save_settings(justify: bool, two_pane: bool) {
-    if let Some(path) = settings_path() {
+    let target = settings_path().or_else(|| legacy_settings_paths().into_iter().next());
+    if let Some(path) = target {
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
         }
