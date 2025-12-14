@@ -351,12 +351,42 @@ pub fn load_pdf_with_backend(
 
 fn page_text_to_blocks(text: &str) -> Vec<Block> {
     let mut out = Vec::new();
-    let mut current = String::new();
+    let mut lines: Vec<String> = Vec::new();
     for raw_line in text.lines() {
         let line = raw_line.trim_end();
+        if line.trim().is_empty() {
+            flush_lines(&mut lines, &mut out);
+            continue;
+        }
+        lines.push(line.to_string());
+    }
+    flush_lines(&mut lines, &mut out);
+    out
+}
+
+fn flush_lines(lines: &mut Vec<String>, out: &mut Vec<Block>) {
+    if lines.is_empty() {
+        return;
+    }
+    if is_monospace_like(lines) {
+        let text = lines.join("\n");
+        out.push(Block::Code { lang: None, text });
+        lines.clear();
+        return;
+    }
+    let para = lines_to_paragraph(lines);
+    let cleaned = para.trim();
+    if !cleaned.is_empty() {
+        out.push(Block::Paragraph(annotate_links(cleaned)));
+    }
+    lines.clear();
+}
+
+fn lines_to_paragraph(lines: &[String]) -> String {
+    let mut current = String::new();
+    for line in lines {
         let trimmed = line.trim();
         if trimmed.is_empty() {
-            flush_para(&mut current, &mut out);
             continue;
         }
         if ends_with_hard_hyphen(trimmed) {
@@ -368,16 +398,24 @@ fn page_text_to_blocks(text: &str) -> Vec<Block> {
             current.push_str(trimmed);
         }
     }
-    flush_para(&mut current, &mut out);
-    out
+    current
 }
 
-fn flush_para(current: &mut String, out: &mut Vec<Block>) {
-    let cleaned = current.trim();
-    if !cleaned.is_empty() {
-        out.push(Block::Paragraph(annotate_links(cleaned)));
+fn is_monospace_like(lines: &[String]) -> bool {
+    if lines.len() < 2 {
+        return false;
     }
-    current.clear();
+    let avg_len: f32 = lines.iter().map(|l| l.len() as f32).sum::<f32>() / lines.len() as f32;
+    let variance: f32 = lines
+        .iter()
+        .map(|l| {
+            let diff = l.len() as f32 - avg_len;
+            diff * diff
+        })
+        .sum::<f32>()
+        / lines.len() as f32;
+    let spaced = lines.iter().filter(|l| l.contains("  ")).count();
+    variance < 16.0 && spaced as f32 / lines.len() as f32 > 0.4
 }
 
 fn ends_with_hard_hyphen(s: &str) -> bool {
