@@ -41,6 +41,7 @@ pub struct Document {
     pub info: DocumentInfo,
     pub blocks: Vec<Block>,
     pub chapter_titles: Vec<String>,
+    pub outlines: Vec<crate::pdf::OutlineEntry>,
 }
 
 impl Document {
@@ -49,6 +50,7 @@ impl Document {
             info,
             blocks,
             chapter_titles,
+            outlines: Vec::new(),
         }
     }
 }

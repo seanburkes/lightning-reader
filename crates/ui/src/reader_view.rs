@@ -47,6 +47,7 @@ pub struct ReaderView {
     pub author: Option<String>,
     pub theme: Theme,
     pub total_pages: Option<usize>,
+    pub toc_overrides: Vec<reader_core::pdf::OutlineEntry>,
 }
 
 impl Default for ReaderView {
@@ -69,6 +70,7 @@ impl ReaderView {
             author: None,
             theme: Theme::default(),
             total_pages: None,
+            toc_overrides: Vec::new(),
         }
     }
 

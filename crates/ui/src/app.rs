@@ -33,6 +33,7 @@ pub struct App {
     pub toc: Option<TocView>,
     pub search: Option<SearchView>,
     pub chapter_titles: Vec<String>,
+    pub outlines: Vec<reader_core::pdf::OutlineEntry>,
     pub book_title: Option<String>,
     pub author: Option<String>,
     pub theme: crate::reader_view::Theme,
@@ -71,6 +72,7 @@ impl App {
             toc: None,
             search: None,
             chapter_titles: Vec::new(),
+            outlines: Vec::new(),
             book_title: None,
             author: None,
             theme: crate::reader_view::Theme::default(),
@@ -92,6 +94,7 @@ impl App {
             toc: None,
             search: None,
             chapter_titles: Vec::new(),
+            outlines: Vec::new(),
             book_title: None,
             author: None,
             theme: crate::reader_view::Theme::default(),
@@ -117,6 +120,7 @@ impl App {
             toc: None,
             search: None,
             chapter_titles,
+            outlines: Vec::new(),
             book_title: None,
             author: None,
             theme: crate::reader_view::Theme::default(),
@@ -135,6 +139,7 @@ impl App {
             Self::new_with_blocks_at(document.blocks, initial_page, document.chapter_titles);
         app.book_title = document.info.title;
         app.author = document.info.author;
+        app.outlines = document.outlines;
         app
     }
 
@@ -200,6 +205,33 @@ impl App {
         });
     }
 
+    fn build_toc_items(&self, view: &ReaderView) -> (Vec<String>, Vec<usize>) {
+        if !self.outlines.is_empty() {
+            let mut items = Vec::new();
+            let mut pages = Vec::new();
+            for entry in &self.outlines {
+                items.push(entry.title.clone());
+                pages.push(entry.page_index);
+            }
+            return (items, pages);
+        }
+        if view.chapter_starts.is_empty() {
+            return (vec!["Start".to_string()], vec![0]);
+        }
+        let mut items: Vec<String> = Vec::new();
+        let mut pages: Vec<usize> = Vec::new();
+        for (i, pidx) in view.chapter_starts.iter().enumerate() {
+            let title = self
+                .chapter_titles
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| format!("Chapter {}", i + 1));
+            items.push(format!("{}  (page {})", title, pidx + 1));
+            pages.push(*pidx);
+        }
+        (items, pages)
+    }
+
     pub fn run(mut self) -> std::io::Result<usize> {
         let mut stdout = stdout();
         let raw_ok = enable_raw_mode().is_ok();
@@ -224,6 +256,7 @@ impl App {
         view.chapter_starts = p.chapter_starts;
         view.chapter_titles = self.chapter_titles.clone();
         view.total_pages = self.total_pages;
+        view.toc_overrides = self.outlines.clone();
         if let Some(idx) = self.initial_page {
             view.current = idx.min(view.pages.len().saturating_sub(1));
         }
@@ -364,14 +397,12 @@ impl App {
                                 KeyCode::Enter => {
                                     if let Mode::Toc = self.mode {
                                         if let Some(t) = &self.toc {
-                                            // Jump: set view.current to chapter start page index
-                                            if let Some(pidx) =
-                                                view.chapter_starts.get(t.selected).cloned()
-                                            {
+                                            if let Some(target) = t.current_page() {
                                                 view.current =
-                                                    pidx.min(view.pages.len().saturating_sub(1));
+                                                    target.min(view.pages.len().saturating_sub(1));
                                             }
                                             self.mode = Mode::Reader;
+                                            self.toc = None;
                                         }
                                     }
                                 }
@@ -384,35 +415,12 @@ impl App {
                                     self.search = Some(search);
                                 }
                                 KeyCode::Char('t') => {
-                                    // Build TOC items from chapter_starts; show indices for now.
-                                    // If empty, still open with a single "Start" entry
-                                    let items: Vec<String> = if view.chapter_starts.is_empty() {
-                                        vec!["Start".to_string()]
-                                    } else {
-                                        view.chapter_starts
-                                            .iter()
-                                            .enumerate()
-                                            .map(|(i, pidx)| {
-                                                let title = self
-                                                    .chapter_titles
-                                                    .get(i)
-                                                    .cloned()
-                                                    .unwrap_or_else(|| {
-                                                        format!("Chapter {}", i + 1)
-                                                    });
-                                                format!("{}  (page {})", title, pidx + 1)
-                                            })
-                                            .collect()
-                                    };
-                                    let mut toc = TocView::new(items);
-                                    // Default selection = current chapter (last start <= current page)
+                                    let (items, page_map) = self.build_toc_items(&view);
+                                    let mut toc = TocView::new(items, page_map);
                                     if let Some(idx) =
-                                        view.chapter_starts.iter().rposition(|&p| p <= view.current)
+                                        toc.page_map.iter().rposition(|p| *p <= view.current)
                                     {
                                         toc.selected = idx;
-                                    } else if !view.chapter_starts.is_empty() {
-                                        // If current is before first start, select the first
-                                        toc.selected = 0;
                                     }
                                     self.toc = Some(toc);
                                     self.mode = Mode::Toc;

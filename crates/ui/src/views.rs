@@ -4,11 +4,16 @@ use unicode_segmentation::UnicodeSegmentation;
 pub struct TocView {
     pub items: Vec<String>,
     pub selected: usize,
+    pub page_map: Vec<usize>,
 }
 
 impl TocView {
-    pub fn new(items: Vec<String>) -> Self {
-        Self { items, selected: 0 }
+    pub fn new(items: Vec<String>, page_map: Vec<usize>) -> Self {
+        Self {
+            items,
+            selected: 0,
+            page_map,
+        }
     }
 
     pub fn up(&mut self) {
@@ -18,6 +23,10 @@ impl TocView {
         if !self.items.is_empty() {
             self.selected = (self.selected + 1).min(self.items.len() - 1);
         }
+    }
+
+    pub fn current_page(&self) -> Option<usize> {
+        self.page_map.get(self.selected).cloned()
     }
 
     pub fn render(&self, f: &mut Frame<'_>, area: Rect, column_width: u16) {
