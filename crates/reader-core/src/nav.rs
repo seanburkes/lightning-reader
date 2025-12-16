@@ -1,9 +1,9 @@
 use quick_xml::events::Event;
 use quick_xml::Reader as XmlReader;
 use std::collections::HashMap;
-use std::fs::File;
 use std::io::Read;
 use std::path::Path;
+use std::{cell::RefCell, fs::File};
 use zip::ZipArchive;
 
 use crate::epub::ReaderError;
@@ -109,13 +109,28 @@ pub fn read_nav_labels(
 ) -> Result<HashMap<String, String>, ReaderError> {
     let file = File::open(zip_path)?;
     let mut zip = ZipArchive::new(file)?;
+    read_nav_labels_from_archive_inner(&mut zip, opf_path)
+}
+
+pub fn read_nav_labels_from_archive(
+    zip: &RefCell<ZipArchive<File>>,
+    opf_path: &Path,
+) -> Result<HashMap<String, String>, ReaderError> {
+    let mut borrow = zip.borrow_mut();
+    read_nav_labels_from_archive_inner(&mut borrow, opf_path)
+}
+
+fn read_nav_labels_from_archive_inner(
+    zip: &mut ZipArchive<File>,
+    opf_path: &Path,
+) -> Result<HashMap<String, String>, ReaderError> {
     let base = opf_path.parent().unwrap_or(Path::new(""));
 
     // Try EPUB3: nav.xhtml or toc.xhtml in OPF directory
     for name in ["nav.xhtml", "toc.xhtml"] {
         let candidate = base.join(name);
         if zip.by_name(candidate.to_string_lossy().as_ref()).is_ok() {
-            let s = read_file_to_string(&mut zip, &candidate)?;
+            let s = read_file_to_string(zip, &candidate)?;
             let labels = parse_epub3_nav(&s, base);
             if !labels.is_empty() {
                 return Ok(labels);
@@ -126,7 +141,7 @@ pub fn read_nav_labels(
     // Try EPUB2: toc.ncx
     let ncx = base.join("toc.ncx");
     if zip.by_name(ncx.to_string_lossy().as_ref()).is_ok() {
-        let s = read_file_to_string(&mut zip, &ncx)?;
+        let s = read_file_to_string(zip, &ncx)?;
         let labels = parse_epub2_ncx(&s, base);
         if !labels.is_empty() {
             return Ok(labels);

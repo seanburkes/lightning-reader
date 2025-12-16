@@ -1,6 +1,8 @@
 use quick_xml::events::Event;
 use quick_xml::Reader as XmlReader;
 use std::{
+    cell::RefCell,
+    collections::HashMap,
     fs::File,
     io::Read,
     path::{Path, PathBuf},
@@ -30,7 +32,8 @@ pub struct EpubBook {
     pub author: Option<String>,
     pub spine: Vec<SpineItem>,
     rootfile: PathBuf,
-    zip_path: PathBuf,
+    zip: RefCell<ZipArchive<File>>,
+    chapter_cache: RefCell<HashMap<String, String>>,
 }
 
 fn read_container(zip: &mut ZipArchive<File>) -> Result<PathBuf, ReaderError> {
@@ -164,7 +167,8 @@ impl EpubBook {
             author,
             spine,
             rootfile,
-            zip_path: path.to_path_buf(),
+            zip: RefCell::new(zip),
+            chapter_cache: RefCell::new(HashMap::new()),
         })
     }
 
@@ -173,19 +177,24 @@ impl EpubBook {
     }
 
     pub fn toc_labels(&self) -> Result<std::collections::HashMap<String, String>, ReaderError> {
-        crate::nav::read_nav_labels(&self.zip_path, &self.rootfile)
+        // Read directly from the shared archive to avoid reopening
+        crate::nav::read_nav_labels_from_archive(&self.zip, &self.rootfile)
     }
 
     pub fn load_chapter(&self, item: &SpineItem) -> Result<String, ReaderError> {
         // Chapter path relative to OPF base
         let base = self.rootfile.parent().unwrap_or(Path::new(""));
         let chapter_path = base.join(&item.href).to_string_lossy().to_string();
-        // Reopen zip and read file by name
-        let file = std::fs::File::open(&self.zip_path)?;
-        let mut zip = ZipArchive::new(file)?;
+        if let Some(cached) = self.chapter_cache.borrow().get(&chapter_path).cloned() {
+            return Ok(cached);
+        }
+        let mut zip = self.zip.borrow_mut();
         let mut chapter = zip.by_name(&chapter_path)?;
         let mut s = String::new();
         chapter.read_to_string(&mut s)?;
+        self.chapter_cache
+            .borrow_mut()
+            .insert(chapter_path, s.clone());
         Ok(s)
     }
 }
