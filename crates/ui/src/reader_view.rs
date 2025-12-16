@@ -30,7 +30,7 @@ impl Default for Theme {
         }
     }
 }
-use reader_core::layout::{Page, Size};
+use reader_core::layout::{Page, Segment, Size, StyledLine};
 use reader_core::types::Block as ReaderBlock;
 
 const SPREAD_GAP: u16 = 4;
@@ -383,7 +383,9 @@ impl ReaderView {
             if i > 0 {
                 buf.push(' ');
             }
-            buf.push_str(&line.to_lowercase());
+            for seg in &line.segments {
+                buf.push_str(&seg.text.to_lowercase());
+            }
         }
         buf.contains(needle)
     }
@@ -424,28 +426,41 @@ impl ReaderView {
         }
     }
 
-    fn page_lines(&self, idx: usize, highlight: Option<&str>) -> Vec<Line<'_>> {
+    fn page_lines(&self, idx: usize, highlight: Option<&str>) -> Vec<ratatui::text::Line<'_>> {
         if let Some(page) = self.pages.get(idx) {
             page.lines
                 .iter()
                 .map(|l| Self::highlight_line(l, highlight))
                 .collect()
         } else {
-            vec![Line::from("")] // empty placeholder for missing spread page
+            vec![ratatui::text::Line::from("")] // empty placeholder for missing spread page
         }
     }
 
-    fn highlight_line<'a>(line: &'a str, highlight: Option<&str>) -> Line<'a> {
+    fn highlight_line<'a>(
+        line: &'a StyledLine,
+        highlight: Option<&str>,
+    ) -> ratatui::text::Line<'a> {
         let needle = highlight
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .unwrap_or("");
+        let mut spans: Vec<Span<'a>> = Vec::new();
+        for seg in &line.segments {
+            let base_style = Self::segment_style(seg);
+            let segment_spans = Self::highlight_text(&seg.text, needle, base_style);
+            spans.extend(segment_spans);
+        }
+        ratatui::text::Line::from(spans)
+    }
+
+    fn highlight_text<'a>(text: &'a str, needle: &str, base_style: Style) -> Vec<Span<'a>> {
         if needle.is_empty() {
-            return Line::from(line.to_string());
+            return vec![Span::styled(text.to_string(), base_style)];
         }
         let needle_g: Vec<String> = needle.graphemes(true).map(|g| g.to_lowercase()).collect();
         let mut spans: Vec<Span<'a>> = Vec::new();
-        let line_g: Vec<&str> = line.graphemes(true).collect();
+        let line_g: Vec<&str> = text.graphemes(true).collect();
         let mut start = 0;
         let mut i = 0;
         while i + needle_g.len() <= line_g.len() {
@@ -457,7 +472,7 @@ impl ReaderView {
             if matches {
                 if start < i {
                     let plain = line_g[start..i].concat();
-                    spans.push(Span::raw(plain));
+                    spans.push(Span::styled(plain, base_style));
                 }
                 let matched = window.concat();
                 spans.push(Span::styled(
@@ -471,9 +486,20 @@ impl ReaderView {
             }
         }
         if start < line_g.len() {
-            spans.push(Span::raw(line_g[start..].concat()));
+            spans.push(Span::styled(line_g[start..].concat(), base_style));
         }
-        Line::from(spans)
+        spans
+    }
+
+    fn segment_style(seg: &Segment) -> Style {
+        let mut style = Style::default();
+        if let Some(rgb) = &seg.fg {
+            style = style.fg(Color::Rgb(rgb.r, rgb.g, rgb.b));
+        }
+        if let Some(rgb) = &seg.bg {
+            style = style.bg(Color::Rgb(rgb.r, rgb.g, rgb.b));
+        }
+        style
     }
 }
 
@@ -483,7 +509,16 @@ mod tests {
 
     fn page(lines: &[&str]) -> Page {
         Page {
-            lines: lines.iter().map(|s| s.to_string()).collect(),
+            lines: lines
+                .iter()
+                .map(|s| StyledLine {
+                    segments: vec![Segment {
+                        text: (*s).to_string(),
+                        fg: None,
+                        bg: None,
+                    }],
+                })
+                .collect(),
         }
     }
 
@@ -532,7 +567,14 @@ mod tests {
 
     #[test]
     fn highlight_line_marks_case_insensitive_matches() {
-        let line = ReaderView::highlight_line("Hello World", Some("world"));
+        let styled = StyledLine {
+            segments: vec![Segment {
+                text: "Hello World".into(),
+                fg: None,
+                bg: None,
+            }],
+        };
+        let line = ReaderView::highlight_line(&styled, Some("world"));
         assert_eq!(line.spans.len(), 2);
         assert_eq!(line.spans[0].content, "Hello ");
         assert_eq!(line.spans[1].content, "World");
@@ -541,7 +583,14 @@ mod tests {
 
     #[test]
     fn highlight_line_marks_multiple_occurrences() {
-        let line = ReaderView::highlight_line("aba ba", Some("ba"));
+        let styled = StyledLine {
+            segments: vec![Segment {
+                text: "aba ba".into(),
+                fg: None,
+                bg: None,
+            }],
+        };
+        let line = ReaderView::highlight_line(&styled, Some("ba"));
         assert_eq!(line.spans.len(), 4); // "a" + "ba" + " " + "ba"
         assert_eq!(line.spans[1].content, "ba");
         assert_eq!(line.spans[1].style.bg, Some(Color::Yellow));

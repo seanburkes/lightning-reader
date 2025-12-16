@@ -64,6 +64,13 @@ pub enum Block {
     Quote(String),
 }
 
+#[derive(Clone, Copy)]
+pub struct RgbColor {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BookId {
     pub id: String,   // sha256 or dc:identifier

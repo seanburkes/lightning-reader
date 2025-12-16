@@ -1,4 +1,5 @@
 use crate::types::Block;
+use highlight;
 use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Clone, Copy)]
@@ -9,7 +10,19 @@ pub struct Size {
 
 #[derive(Clone)]
 pub struct Page {
-    pub lines: Vec<String>,
+    pub lines: Vec<StyledLine>,
+}
+
+#[derive(Clone)]
+pub struct StyledLine {
+    pub segments: Vec<Segment>,
+}
+
+#[derive(Clone)]
+pub struct Segment {
+    pub text: String,
+    pub fg: Option<crate::types::RgbColor>,
+    pub bg: Option<crate::types::RgbColor>,
 }
 
 #[derive(Clone)]
@@ -48,7 +61,7 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
                     } else {
                         lines[i].clone()
                     };
-                    current.lines.push(line);
+                    current.lines.push(StyledLine::from_plain(line));
                     if current.lines.len() as u16 >= size.height {
                         pages.push(current.clone());
                         current = Page { lines: Vec::new() };
@@ -56,7 +69,7 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
                     }
                 }
                 // blank line between paragraphs
-                current.lines.push(String::new());
+                current.lines.push(StyledLine::from_plain(String::new()));
             }
             Block::Quote(text) => {
                 if let Some(start_idx) = pending_chapter_start.take() {
@@ -71,22 +84,22 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
                 for raw_line in text.lines() {
                     let clipped = truncate_graphemes(raw_line, eff_width.max(4));
                     let prefixed = format!("{}{}", prefix, clipped);
-                    current.lines.push(prefixed);
+                    current.lines.push(StyledLine::from_plain(prefixed));
                     if current.lines.len() as u16 >= size.height {
                         pages.push(current.clone());
                         current = Page { lines: Vec::new() };
                         at_page_index += 1;
                     }
                 }
-                current.lines.push(String::new());
+                current.lines.push(StyledLine::from_plain(String::new()));
             }
             Block::Heading(text, _) => {
                 if let Some(start_idx) = pending_chapter_start.take() {
                     chapter_starts.push(start_idx);
                 }
                 let heading = text.to_uppercase();
-                current.lines.push(heading);
-                current.lines.push(String::new());
+                current.lines.push(StyledLine::from_plain(heading));
+                current.lines.push(StyledLine::from_plain(String::new()));
             }
             Block::List(items) => {
                 if let Some(start_idx) = pending_chapter_start.take() {
@@ -102,7 +115,7 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
                         } else {
                             lines[i].clone()
                         };
-                        current.lines.push(out);
+                        current.lines.push(StyledLine::from_plain(out));
                         if current.lines.len() as u16 >= size.height {
                             pages.push(current.clone());
                             current = Page { lines: Vec::new() };
@@ -110,27 +123,47 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
                         }
                     }
                 }
-                current.lines.push(String::new());
+                current.lines.push(StyledLine::from_plain(String::new()));
             }
-            Block::Code { text, .. } => {
+            Block::Code { text, lang } => {
                 if let Some(start_idx) = pending_chapter_start.take() {
                     chapter_starts.push(start_idx);
                 }
                 let show_rule = size.width >= 12;
                 let prefix = if show_rule { "│ " } else { "  " };
-                let prefix_width = prefix.graphemes(true).count() as u16;
-                let eff_width = size.width.saturating_sub(prefix_width) as usize;
-                for line in text.lines() {
-                    let clipped = truncate_graphemes(line, eff_width.max(4));
-                    let prefixed = format!("{}{}", prefix, clipped);
-                    current.lines.push(prefixed);
+                let max_width = size.width as usize;
+                let highlighted = highlight::highlight_code(lang.as_deref(), text);
+                for line in highlighted {
+                    let mut segs = Vec::new();
+                    segs.push(Segment {
+                        text: prefix.to_string(),
+                        fg: None,
+                        bg: None,
+                    });
+                    for span in line.spans {
+                        segs.push(Segment {
+                            text: span.text,
+                            fg: span.fg.map(|c| crate::types::RgbColor {
+                                r: c.r,
+                                g: c.g,
+                                b: c.b,
+                            }),
+                            bg: span.bg.map(|c| crate::types::RgbColor {
+                                r: c.r,
+                                g: c.g,
+                                b: c.b,
+                            }),
+                        });
+                    }
+                    let clipped = clip_segments(segs, max_width.max(4));
+                    current.lines.push(clipped);
                     if current.lines.len() as u16 >= size.height {
                         pages.push(current.clone());
                         current = Page { lines: Vec::new() };
                         at_page_index += 1;
                     }
                 }
-                current.lines.push(String::new());
+                current.lines.push(StyledLine::from_plain(String::new()));
             }
         }
     }
@@ -312,4 +345,50 @@ fn truncate_graphemes(s: &str, width: usize) -> String {
         count += 1;
     }
     out
+}
+
+fn clip_segments(segments: Vec<Segment>, width: usize) -> StyledLine {
+    let mut out = Vec::new();
+    let mut used = 0usize;
+    for seg in segments {
+        if used >= width {
+            break;
+        }
+        let mut buf = String::new();
+        for g in seg.text.graphemes(true) {
+            if used >= width {
+                break;
+            }
+            buf.push_str(g);
+            used += 1;
+        }
+        if !buf.is_empty() {
+            out.push(Segment {
+                text: buf,
+                fg: seg.fg,
+                bg: seg.bg,
+            });
+        }
+        if used >= width {
+            out.push(Segment {
+                text: "…".into(),
+                fg: seg.fg,
+                bg: seg.bg,
+            });
+            break;
+        }
+    }
+    StyledLine { segments: out }
+}
+
+impl StyledLine {
+    pub fn from_plain(text: String) -> Self {
+        Self {
+            segments: vec![Segment {
+                text,
+                fg: None,
+                bg: None,
+            }],
+        }
+    }
 }
