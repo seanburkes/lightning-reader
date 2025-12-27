@@ -1,8 +1,10 @@
+use ratatui::{prelude::*, widgets::*};
 use reader_core::layout::WordToken;
 use std::time::Instant;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::SpritzSettings;
+use crate::reader_view::Theme;
 
 pub struct SpritzView {
     words: Vec<WordToken>,
@@ -12,6 +14,7 @@ pub struct SpritzView {
     last_update: Instant,
     settings: SpritzSettings,
     pub chapter_titles: Vec<String>,
+    pub theme: Theme,
 }
 
 impl SpritzView {
@@ -19,6 +22,7 @@ impl SpritzView {
         words: Vec<WordToken>,
         settings: SpritzSettings,
         chapter_titles: Vec<String>,
+        theme: Theme,
     ) -> Self {
         let wpm = settings.wpm;
         Self {
@@ -29,6 +33,7 @@ impl SpritzView {
             last_update: Instant::now(),
             settings,
             chapter_titles,
+            theme,
         }
     }
 
@@ -163,6 +168,150 @@ impl SpritzView {
             self.last_update = Instant::now();
         }
     }
+
+    pub fn render(&self, f: &mut Frame<'_>, area: Rect) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(area);
+
+        let header_area = chunks[0];
+        let word_area = chunks[1];
+        let progress_area = chunks[2];
+        let status_area = chunks[3];
+
+        self.render_header(f, header_area);
+        self.render_word(f, word_area);
+        self.render_progress(f, progress_area);
+        self.render_status(f, status_area);
+    }
+
+    fn render_header(&self, f: &mut Frame<'_>, area: Rect) {
+        let chapter_title = self
+            .current_chapter()
+            .cloned()
+            .unwrap_or_else(|| "Unknown Chapter".to_string());
+
+        let header = Paragraph::new(Line::styled(
+            chapter_title,
+            Style::default()
+                .fg(self.theme.header_fg)
+                .bg(self.theme.header_bg),
+        ))
+        .bg(self.theme.header_bg);
+        f.render_widget(header, area);
+    }
+
+    fn render_word(&self, f: &mut Frame<'_>, area: Rect) {
+        let word = match self.current_word() {
+            Some(w) => &w.text,
+            None => return,
+        };
+
+        let orp = Self::get_orp_position(word);
+        let chars: Vec<&str> = word.graphemes(true).collect();
+
+        let mut line = Line::default();
+
+        for (i, &c) in chars.iter().enumerate() {
+            if i < orp {
+                line.push_span(Span::styled(
+                    c,
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::DIM),
+                ));
+            } else if i == orp {
+                line.push_span(Span::styled(
+                    c,
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                line.push_span(Span::styled(c, Style::default().fg(Color::Reset)));
+            }
+        }
+
+        let paragraph = Paragraph::new(line)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: false });
+        f.render_widget(Clear, area);
+        f.render_widget(paragraph, area);
+    }
+
+    fn render_progress(&self, f: &mut Frame<'_>, area: Rect) {
+        let progress = if self.words.is_empty() {
+            0.0
+        } else {
+            (self.current_index + 1) as f32 / self.words.len() as f32
+        };
+
+        let bar_width = area.width.saturating_sub(2) as usize;
+        let filled = (bar_width as f32 * progress).round() as usize;
+        let empty = bar_width.saturating_sub(filled);
+
+        let filled_bar = "▮".repeat(filled);
+        let empty_bar = "▯".repeat(empty);
+        let percentage = (progress * 100.0) as usize;
+
+        let progress_line = Line::from(vec![
+            Span::styled("[", Style::default().fg(Color::DarkGray)),
+            Span::styled(filled_bar, Style::default().fg(Color::Blue)),
+            Span::styled(empty_bar, Style::default().fg(Color::DarkGray)),
+            Span::styled("]", Style::default().fg(Color::DarkGray)),
+            Span::raw(" "),
+            Span::styled(
+                format!("{}%", percentage),
+                Style::default().fg(self.theme.footer_fg),
+            ),
+        ]);
+
+        let paragraph = Paragraph::new(progress_line)
+            .bg(self.theme.footer_pad_bg)
+            .alignment(Alignment::Center);
+        f.render_widget(paragraph, area);
+    }
+
+    fn render_status(&self, f: &mut Frame<'_>, area: Rect) {
+        let word_display = if self.words.is_empty() {
+            "0/0".to_string()
+        } else {
+            format!("{}/{}", self.current_index + 1, self.words.len())
+        };
+
+        let status_icon = if self.is_playing { "▶" } else { "⏸" };
+        let status_text = if self.is_playing { "Playing" } else { "Paused" };
+
+        let status_line = Line::from(vec![
+            Span::styled(
+                format!("{} WPM  ", self.wpm),
+                Style::default().fg(self.theme.footer_fg),
+            ),
+            Span::styled(
+                format!("Word {}  ", word_display),
+                Style::default().fg(self.theme.footer_fg),
+            ),
+            Span::styled(
+                format!("{} {}", status_icon, status_text),
+                Style::default()
+                    .fg(if self.is_playing {
+                        Color::Green
+                    } else {
+                        Color::Yellow
+                    })
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]);
+
+        let paragraph = Paragraph::new(status_line)
+            .bg(self.theme.footer_bg)
+            .alignment(Alignment::Center);
+        f.render_widget(paragraph, area);
+    }
 }
 
 #[cfg(test)]
@@ -175,6 +324,10 @@ mod tests {
             pause_on_punct: true,
             punct_pause_ms: 100,
         }
+    }
+
+    fn dummy_theme() -> Theme {
+        Theme::default()
     }
 
     #[test]
@@ -199,7 +352,8 @@ mod tests {
     fn adjust_wpm_clamps_to_range() {
         let words = vec![];
         let settings = dummy_settings();
-        let mut view = SpritzView::new(words, settings, vec![]);
+        let theme = dummy_theme();
+        let mut view = SpritzView::new(words, settings, vec![], theme);
         view.wpm = 100;
 
         view.adjust_wpm(-200);
@@ -219,7 +373,8 @@ mod tests {
             chapter_index: None,
         }];
         let settings = dummy_settings();
-        let mut view = SpritzView::new(words, settings, vec![]);
+        let theme = dummy_theme();
+        let mut view = SpritzView::new(words, settings, vec![], theme);
         view.current_index = 0;
 
         view.rewind(10);
@@ -243,7 +398,8 @@ mod tests {
             },
         ];
         let settings = dummy_settings();
-        let mut view = SpritzView::new(words, settings, vec![]);
+        let theme = dummy_theme();
+        let mut view = SpritzView::new(words, settings, vec![], theme);
         view.current_index = 0;
 
         view.fast_forward(10);
@@ -254,7 +410,8 @@ mod tests {
     fn toggle_play_switches_state() {
         let words = vec![];
         let settings = dummy_settings();
-        let mut view = SpritzView::new(words, settings, vec![]);
+        let theme = dummy_theme();
+        let mut view = SpritzView::new(words, settings, vec![], theme);
 
         assert!(!view.is_playing);
         view.toggle_play();
