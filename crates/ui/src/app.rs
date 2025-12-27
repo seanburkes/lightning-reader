@@ -20,9 +20,28 @@ use reader_core::types::{Block as ReaderBlock, Document};
 use crate::{
     layout::centered_rect, reader_view::ReaderView, search_view::SearchView, views::TocView,
 };
+
+#[derive(Clone, Copy, Debug)]
+pub struct SpritzSettings {
+    pub wpm: u16,
+    pub pause_on_punct: bool,
+    pub punct_pause_ms: u16,
+}
+
+impl Default for SpritzSettings {
+    fn default() -> Self {
+        Self {
+            wpm: 250,
+            pause_on_punct: true,
+            punct_pause_ms: 100,
+        }
+    }
+}
+
 pub enum Mode {
     Reader,
     Toc,
+    Spritz,
 }
 
 pub struct App {
@@ -239,7 +258,7 @@ impl App {
         let mut terminal = Terminal::new(backend)?;
 
         let mut view = ReaderView::new();
-        let (saved_justify, saved_two_pane) = load_settings();
+        let (saved_justify, saved_two_pane, _spritz_settings) = load_settings();
         view.justify = saved_justify;
         view.two_pane = saved_two_pane;
         view.book_title = self.book_title.clone();
@@ -303,6 +322,7 @@ impl App {
                             view.render(f, size, width, self.last_search.as_deref());
                         }
                     }
+                    Mode::Spritz => {}
                 }
                 if let Some(search) = &self.search {
                     search.render(f, size);
@@ -442,6 +462,7 @@ impl App {
                                             t.down();
                                         }
                                     }
+                                    Mode::Spritz => {}
                                 },
                                 KeyCode::Char('k') | KeyCode::Up => match self.mode {
                                     Mode::Reader => {
@@ -453,6 +474,7 @@ impl App {
                                             t.up();
                                         }
                                     }
+                                    Mode::Spritz => {}
                                 },
 
                                 KeyCode::Char('h') | KeyCode::Left => {
@@ -496,7 +518,11 @@ impl App {
                                 KeyCode::Char('J') => {
                                     if let Mode::Reader = self.mode {
                                         view.justify = !view.justify;
-                                        save_settings(view.justify, view.two_pane);
+                                        save_settings(
+                                            view.justify,
+                                            view.two_pane,
+                                            &SpritzSettings::default(),
+                                        );
                                         view.last_key = Some("J toggle".into());
                                         let inner = ReaderView::inner_size(
                                             terminal.size()?,
@@ -515,7 +541,11 @@ impl App {
                                             view.current =
                                                 view.current.saturating_sub(view.current % 2);
                                         }
-                                        save_settings(view.justify, view.two_pane);
+                                        save_settings(
+                                            view.justify,
+                                            view.two_pane,
+                                            &SpritzSettings::default(),
+                                        );
                                         let inner = ReaderView::inner_size(
                                             terminal.size()?,
                                             width,
@@ -570,9 +600,10 @@ fn legacy_settings_paths() -> Vec<PathBuf> {
         .collect()
 }
 
-fn load_settings() -> (bool, bool) {
+fn load_settings() -> (bool, bool, SpritzSettings) {
     let mut justify = false;
     let mut two_pane = false;
+    let mut spritz = SpritzSettings::default();
     let mut candidates = Vec::new();
     if let Some(primary) = settings_path() {
         candidates.push(primary);
@@ -585,20 +616,34 @@ fn load_settings() -> (bool, bool) {
                     justify = val.trim().eq_ignore_ascii_case("true");
                 } else if let Some(val) = line.strip_prefix("two_pane=") {
                     two_pane = val.trim().eq_ignore_ascii_case("true");
+                } else if let Some(val) = line.strip_prefix("spritz_wpm=") {
+                    spritz.wpm = val.trim().parse().unwrap_or(spritz.wpm).clamp(100, 1000);
+                } else if let Some(val) = line.strip_prefix("spritz_pause_on_punct=") {
+                    spritz.pause_on_punct = val.trim().eq_ignore_ascii_case("true");
+                } else if let Some(val) = line.strip_prefix("spritz_punct_pause_ms=") {
+                    spritz.punct_pause_ms = val.trim().parse().unwrap_or(spritz.punct_pause_ms);
                 }
             }
             break;
         }
     }
-    (justify, two_pane)
+    (justify, two_pane, spritz)
 }
 
-fn save_settings(justify: bool, two_pane: bool) {
+fn save_settings(justify: bool, two_pane: bool, spritz: &SpritzSettings) {
     let target = settings_path().or_else(|| legacy_settings_paths().into_iter().next());
     if let Some(path) = target {
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        let _ = fs::write(path, format!("justify={justify}\ntwo_pane={two_pane}\n"));
+        let _ = fs::write(
+            path,
+            format!(
+                "justify={justify}\ntwo_pane={two_pane}\nspritz_wpm={}\nspritz_pause_on_punct={}\nspritz_punct_pause_ms={}\n",
+                spritz.wpm,
+                spritz.pause_on_punct,
+                spritz.punct_pause_ms
+            ),
+        );
     }
 }
