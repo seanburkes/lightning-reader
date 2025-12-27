@@ -7,3 +7,5 @@ pub mod pdf;
 pub mod types;
 
 pub mod state;
+
+pub use layout::{extract_words, WordToken};
