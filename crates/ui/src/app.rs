@@ -18,7 +18,8 @@ use ratatui::{
 use reader_core::types::{Block as ReaderBlock, Document};
 
 use crate::{
-    layout::centered_rect, reader_view::ReaderView, search_view::SearchView, views::TocView,
+    layout::centered_rect, reader_view::ReaderView, search_view::SearchView,
+    spritz_view::SpritzView, views::TocView,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -50,6 +51,7 @@ pub struct App {
     pub mode: Mode,
     pub toc: Option<TocView>,
     pub search: Option<SearchView>,
+    pub spritz: Option<SpritzView>,
     pub chapter_titles: Vec<String>,
     pub outlines: Vec<reader_core::pdf::OutlineEntry>,
     pub book_title: Option<String>,
@@ -89,6 +91,7 @@ impl App {
             mode: Mode::Reader,
             toc: None,
             search: None,
+            spritz: None,
             chapter_titles: Vec::new(),
             outlines: Vec::new(),
             book_title: None,
@@ -111,6 +114,7 @@ impl App {
             mode: Mode::Reader,
             toc: None,
             search: None,
+            spritz: None,
             chapter_titles: Vec::new(),
             outlines: Vec::new(),
             book_title: None,
@@ -137,6 +141,7 @@ impl App {
             mode: Mode::Reader,
             toc: None,
             search: None,
+            spritz: None,
             chapter_titles,
             outlines: Vec::new(),
             book_title: None,
@@ -322,7 +327,12 @@ impl App {
                             view.render(f, size, width, self.last_search.as_deref());
                         }
                     }
-                    Mode::Spritz => {}
+                    Mode::Spritz => {
+                        if let Some(spritz) = self.spritz.as_mut() {
+                            spritz.update();
+                            spritz.render(f, size);
+                        }
+                    }
                 }
                 if let Some(search) = &self.search {
                     search.render(f, size);
@@ -411,6 +421,9 @@ impl App {
                                 KeyCode::Esc => {
                                     if let Mode::Toc = self.mode {
                                         self.mode = Mode::Reader;
+                                    } else if let Mode::Spritz = self.mode {
+                                        self.spritz = None;
+                                        self.mode = Mode::Reader;
                                     }
                                 }
                                 KeyCode::Enter => {
@@ -444,6 +457,26 @@ impl App {
                                     self.toc = Some(toc);
                                     self.mode = Mode::Toc;
                                 }
+                                KeyCode::Char('s') => match self.mode {
+                                    Mode::Reader => {
+                                        let words =
+                                            reader_core::layout::extract_words(&self.blocks);
+                                        let settings = SpritzSettings::default();
+                                        let spritz = SpritzView::new(
+                                            words,
+                                            settings,
+                                            self.chapter_titles.clone(),
+                                            self.theme.clone(),
+                                        );
+                                        self.spritz = Some(spritz);
+                                        self.mode = Mode::Spritz;
+                                    }
+                                    Mode::Spritz => {
+                                        self.spritz = None;
+                                        self.mode = Mode::Reader;
+                                    }
+                                    Mode::Toc => {}
+                                },
 
                                 KeyCode::Char('c')
                                     if key
