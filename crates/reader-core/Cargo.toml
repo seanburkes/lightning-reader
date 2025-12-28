@@ -20,6 +20,7 @@ lopdf = "0.38"
 lru = "0.12"
 pdf = { version = "0.9", default-features = true }
 highlight = { path = "../highlight" }
+chrono = { version = "0.4", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

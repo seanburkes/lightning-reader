@@ -1,3 +1,4 @@
+use chrono::Utc;
 use std::{
     fs,
     io::stdout,
@@ -56,6 +57,7 @@ pub struct App {
     pub outlines: Vec<reader_core::pdf::OutlineEntry>,
     pub book_title: Option<String>,
     pub author: Option<String>,
+    pub book_id: Option<String>,
     pub theme: crate::reader_view::Theme,
     pub last_search: Option<String>,
     pub last_search_hit: Option<usize>,
@@ -96,6 +98,7 @@ impl App {
             outlines: Vec::new(),
             book_title: None,
             author: None,
+            book_id: None,
             theme: crate::reader_view::Theme::default(),
             last_search: None,
             last_search_hit: None,
@@ -119,6 +122,7 @@ impl App {
             outlines: Vec::new(),
             book_title: None,
             author: None,
+            book_id: None,
             theme: crate::reader_view::Theme::default(),
             last_search: None,
             last_search_hit: None,
@@ -146,6 +150,7 @@ impl App {
             outlines: Vec::new(),
             book_title: None,
             author: None,
+            book_id: None,
             theme: crate::reader_view::Theme::default(),
             last_search: None,
             last_search_hit: None,
@@ -162,6 +167,7 @@ impl App {
             Self::new_with_blocks_at(document.blocks, initial_page, document.chapter_titles);
         app.book_title = document.info.title;
         app.author = document.info.author;
+        app.book_id = Some(document.info.id);
         app.outlines = document.outlines;
         app
     }
@@ -438,6 +444,17 @@ impl App {
                                     if let Mode::Toc = self.mode {
                                         self.mode = Mode::Reader;
                                     } else if let Mode::Spritz = self.mode {
+                                        if let Some(spritz) = &self.spritz {
+                                            if let Some(book_id) = &self.book_id {
+                                                let session = reader_core::SpritzSession {
+                                                    book_id: book_id.clone(),
+                                                    word_index: spritz.current_index,
+                                                    wpm: spritz.wpm,
+                                                    saved_at: Utc::now().to_rfc3339(),
+                                                };
+                                                let _ = reader_core::save_spritz_session(&session);
+                                            }
+                                        }
                                         self.spritz = None;
                                         self.mode = Mode::Reader;
                                     }
@@ -478,16 +495,37 @@ impl App {
                                         let words =
                                             reader_core::layout::extract_words(&self.blocks);
                                         let settings = SpritzSettings::default();
-                                        let spritz = SpritzView::new(
+                                        let mut spritz = SpritzView::new(
                                             words,
                                             settings,
                                             self.chapter_titles.clone(),
                                             self.theme.clone(),
                                         );
+
+                                        if let Some(book_id) = &self.book_id {
+                                            if let Some(session) =
+                                                reader_core::load_spritz_session(book_id)
+                                            {
+                                                spritz.current_index = session.word_index;
+                                                spritz.wpm = session.wpm;
+                                            }
+                                        }
+
                                         self.spritz = Some(spritz);
                                         self.mode = Mode::Spritz;
                                     }
                                     Mode::Spritz => {
+                                        if let Some(spritz) = &self.spritz {
+                                            if let Some(book_id) = &self.book_id {
+                                                let session = reader_core::SpritzSession {
+                                                    book_id: book_id.clone(),
+                                                    word_index: spritz.current_index,
+                                                    wpm: spritz.wpm,
+                                                    saved_at: Utc::now().to_rfc3339(),
+                                                };
+                                                let _ = reader_core::save_spritz_session(&session);
+                                            }
+                                        }
                                         self.spritz = None;
                                         self.mode = Mode::Reader;
                                     }

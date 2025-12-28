@@ -92,3 +92,11 @@ pub struct AppStateRecord {
     pub last_location: Location,
     pub bookmarks: Vec<Location>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpritzSession {
+    pub book_id: String,
+    pub word_index: usize,
+    pub wpm: u16,
+    pub saved_at: String,
+}
