@@ -6,13 +6,15 @@ pub enum DocumentFormat {
     #[serde(alias = "epub")]
     Epub3,
     Epub2,
+    Text,
+    Markdown,
     Pdf,
     #[serde(other)]
     Other,
 }
 
 fn default_format() -> DocumentFormat {
-    DocumentFormat::Epub3
+    DocumentFormat::Text
 }
 
 #[derive(Clone)]

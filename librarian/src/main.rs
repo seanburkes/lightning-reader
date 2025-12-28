@@ -16,7 +16,7 @@ use reader_core::{
 use ui::app::{IncomingPage, PrefetchRequest};
 
 fn main() {
-    // Accept optional EPUB/PDF path: default to docs/alice.epub
+    // Accept optional EPUB/PDF/TXT/MD path: default to docs/alice.epub
     let args: Vec<String> = env::args().collect();
     let input_path = args
         .get(1)
@@ -75,16 +75,43 @@ fn main() {
         Err(_) => match EpubBook::open(Path::new("docs/alice.epub")) {
             Ok(b) => b,
             Err(e) => {
-                eprintln!("Failed to open EPUB: {}", e);
+                eprintln!("Failed to open file: {}", e);
                 return;
             }
         },
     };
-    let book_id = BookId {
-        id: format!("path:{}", input_path),
-        path: input_path.clone(),
-        title: book.title.clone(),
-        format: DocumentFormat::Epub3,
+    
+
+    // Handle text files (TXT/MD)
+        },
+    };
+    
+    // Handle text files (TXT/MD)
+    if matches!(format, DocumentFormat::Text) | matches!(format, DocumentFormat::Markdown) {
+        match reader_core::text::TextFile::open(&path) {
+            Ok(text_doc) => {
+                let document = text_doc.to_document();
+                let book_id = BookId {
+                    id: format!("path:{}", input_path),
+                    path: input_path.clone(),
+                    title: document.info.title.clone(),
+                    author: None,
+                    format,
+                };
+                
+                run_reader(
+                    &document,
+                    &book_id,
+                    0,  // Start at page 0
+                );
+            }
+            Err(e) => {
+                eprintln!("Failed to open text file: {}", e);
+                return;
+            }
+        }
+    }
+    
     };
     let document_info = DocumentInfo::from_book_id(&book_id, book.author.clone());
 
@@ -383,7 +410,7 @@ fn run_reader(document: Document, book_id: BookId, selected_index: usize) {
     };
     let _ = save_state(&rec);
 
-    eprintln!("Run with: cargo run -p librarian [path_to_epub]  # default docs/alice.epub");
+    eprintln!("Run with: cargo run -p librarian [path_to_epub|path_to_txt|path_to_md]  # default docs/alice.epub");
 }
 
 fn run_reader_streaming(
@@ -431,7 +458,7 @@ fn run_reader_streaming(
     };
     let _ = save_state(&rec);
 
-    eprintln!("Run with: cargo run -p librarian [path_to_epub]  # default docs/alice.epub");
+    eprintln!("Run with: cargo run -p librarian [path_to_epub|path_to_txt|path_to_md]  # default docs/alice.epub");
 }
 
 fn apply_theme_config(app: &mut ui::app::App) {
@@ -550,8 +577,10 @@ fn detect_format(path: &str) -> DocumentFormat {
             match lower.as_str() {
                 "pdf" => DocumentFormat::Pdf,
                 "epub" => DocumentFormat::Epub3,
+                "txt" | "text" => DocumentFormat::Text,
+                "md" | "markdown" => DocumentFormat::Markdown,
                 _ => DocumentFormat::Other,
             }
         })
-        .unwrap_or(DocumentFormat::Epub3)
+        .unwrap_or(DocumentFormat::Text)
 }
