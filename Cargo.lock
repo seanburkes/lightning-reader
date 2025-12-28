@@ -1145,6 +1145,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lru"
+version = "0.16.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96051b46fc183dc9cd4a223960ef37b9af631b55191852a8274bfef064cda20f"
+dependencies = [
+ "hashbrown 0.16.1",
+]
+
+[[package]]
 name = "lzma-rust2"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1730,7 +1739,7 @@ dependencies = [
  "compact_str",
  "crossterm 0.27.0",
  "itertools 0.12.1",
- "lru",
+ "lru 0.12.5",
  "paste",
  "stability",
  "strum",
@@ -1770,7 +1779,7 @@ dependencies = [
  "hyphenation",
  "kuchiki",
  "lopdf",
- "lru",
+ "lru 0.16.2",
  "pdf",
  "quick-xml",
  "serde",
