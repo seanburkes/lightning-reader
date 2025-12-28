@@ -469,6 +469,37 @@ impl App {
                                             self.mode = Mode::Reader;
                                             self.toc = None;
                                         }
+                                    } else if let Mode::Spritz = self.mode {
+                                        if let Some(spritz) = &mut self.spritz {
+                                            if !spritz.is_playing {
+                                                spritz.play();
+                                            }
+                                        }
+                                    } else if let Some(search) = &self.search {
+                                        let query = search.query.clone();
+                                        let trimmed = query.trim().to_string();
+                                        let start_from =
+                                            if self.last_search.as_deref().map(str::trim)
+                                                == Some(trimmed.as_str())
+                                            {
+                                                self.last_search_hit.map(|p| p + 1)
+                                            } else {
+                                                None
+                                            };
+                                        self.last_search = Some(trimmed.clone());
+                                        if let Some(idx) = view.search_forward(&trimmed, start_from)
+                                        {
+                                            let target = if view.two_pane {
+                                                idx.saturating_sub(idx % 2)
+                                            } else {
+                                                idx
+                                            };
+                                            view.current = target;
+                                            self.last_search_hit = Some(idx);
+                                        } else {
+                                            self.last_search_hit = None;
+                                        }
+                                        self.search = None;
                                     }
                                 }
                                 KeyCode::Char('/') => {
@@ -539,38 +570,64 @@ impl App {
                                 {
                                     exit = true
                                 }
-                                KeyCode::Char('j') | KeyCode::Down => match self.mode {
-                                    Mode::Reader => {
-                                        view.down(1);
-                                        view.last_key = Some("j/down".into());
-                                    }
-                                    Mode::Toc => {
-                                        if let Some(t) = &mut self.toc {
-                                            t.down();
+                                KeyCode::Char('j') | KeyCode::Down => {
+                                    if key
+                                        .modifiers
+                                        .contains(crossterm::event::KeyModifiers::CONTROL)
+                                    {
+                                        if let Mode::Spritz = self.mode {
+                                            if let Some(spritz) = &mut self.spritz {
+                                                spritz.fast_forward(10);
+                                            }
+                                        }
+                                    } else {
+                                        match self.mode {
+                                            Mode::Reader => {
+                                                view.down(1);
+                                                view.last_key = Some("j/down".into());
+                                            }
+                                            Mode::Toc => {
+                                                if let Some(t) = &mut self.toc {
+                                                    t.down();
+                                                }
+                                            }
+                                            Mode::Spritz => {
+                                                if let Some(spritz) = &mut self.spritz {
+                                                    spritz.fast_forward(1);
+                                                }
+                                            }
                                         }
                                     }
-                                    Mode::Spritz => {
-                                        if let Some(spritz) = &mut self.spritz {
-                                            spritz.fast_forward(1);
+                                }
+                                KeyCode::Char('k') | KeyCode::Up => {
+                                    if key
+                                        .modifiers
+                                        .contains(crossterm::event::KeyModifiers::CONTROL)
+                                    {
+                                        if let Mode::Spritz = self.mode {
+                                            if let Some(spritz) = &mut self.spritz {
+                                                spritz.rewind(10);
+                                            }
+                                        }
+                                    } else {
+                                        match self.mode {
+                                            Mode::Reader => {
+                                                view.up(1);
+                                                view.last_key = Some("k/up".into());
+                                            }
+                                            Mode::Toc => {
+                                                if let Some(t) = &mut self.toc {
+                                                    t.up();
+                                                }
+                                            }
+                                            Mode::Spritz => {
+                                                if let Some(spritz) = &mut self.spritz {
+                                                    spritz.rewind(1);
+                                                }
+                                            }
                                         }
                                     }
-                                },
-                                KeyCode::Char('k') | KeyCode::Up => match self.mode {
-                                    Mode::Reader => {
-                                        view.up(1);
-                                        view.last_key = Some("k/up".into());
-                                    }
-                                    Mode::Toc => {
-                                        if let Some(t) = &mut self.toc {
-                                            t.up();
-                                        }
-                                    }
-                                    Mode::Spritz => {
-                                        if let Some(spritz) = &mut self.spritz {
-                                            spritz.rewind(1);
-                                        }
-                                    }
-                                },
+                                }
 
                                 KeyCode::Char('h') | KeyCode::Left => match self.mode {
                                     Mode::Reader => {
@@ -675,15 +732,7 @@ impl App {
                                         }
                                     }
                                 }
-                                KeyCode::Enter => {
-                                    if let Mode::Spritz = self.mode {
-                                        if let Some(spritz) = &mut self.spritz {
-                                            if !spritz.is_playing {
-                                                spritz.play();
-                                            }
-                                        }
-                                    }
-                                }
+
                                 KeyCode::Char('r') => {
                                     if let Mode::Spritz = self.mode {
                                         if let Some(spritz) = &mut self.spritz {
@@ -726,28 +775,7 @@ impl App {
                                         }
                                     }
                                 }
-                                KeyCode::Char('j')
-                                    if key
-                                        .modifiers
-                                        .contains(crossterm::event::KeyModifiers::CONTROL) =>
-                                {
-                                    if let Mode::Spritz = self.mode {
-                                        if let Some(spritz) = &mut self.spritz {
-                                            spritz.fast_forward(10);
-                                        }
-                                    }
-                                }
-                                KeyCode::Char('k')
-                                    if key
-                                        .modifiers
-                                        .contains(crossterm::event::KeyModifiers::CONTROL) =>
-                                {
-                                    if let Mode::Spritz = self.mode {
-                                        if let Some(spritz) = &mut self.spritz {
-                                            spritz.rewind(10);
-                                        }
-                                    }
-                                }
+
                                 KeyCode::Char('?') => {
                                     self.show_help = !self.show_help;
                                 }
