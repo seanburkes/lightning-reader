@@ -252,10 +252,22 @@ impl SpritzView {
         }
 
         let paragraph = Paragraph::new(line)
-            .alignment(Alignment::Center)
+            .alignment(Alignment::Left)
             .wrap(Wrap { trim: false });
+
         f.render_widget(Clear, area);
-        f.render_widget(paragraph, area);
+
+        let orp_target_y = area.y + (area.height as f32 * 0.35) as u16;
+        let word_height = 1;
+
+        let word_area = Rect {
+            x: area.x,
+            y: orp_target_y.saturating_sub(word_height),
+            width: area.width,
+            height: word_height,
+        };
+
+        f.render_widget(paragraph, word_area);
     }
 
     fn render_progress(&self, f: &mut Frame<'_>, area: Rect) {
