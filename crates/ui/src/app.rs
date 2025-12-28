@@ -330,7 +330,7 @@ impl App {
                     Mode::Spritz => {
                         if let Some(spritz) = self.spritz.as_mut() {
                             spritz.update();
-                            spritz.render(f, size);
+                            spritz.render(f, size, width);
                         }
                     }
                 }
@@ -344,6 +344,7 @@ impl App {
                             "q / Ctrl-C / s / Esc: exit spritz mode",
                             "Space: toggle play/pause",
                             "j/k or arrows: navigate word-by-word",
+                            "h / l or arrows: adjust column width",
                             "Ctrl+j/Ctrl+k: jump 10 words",
                             "+/- or =/_: adjust WPM by 10",
                             "[ / ]: adjust WPM by 50",
@@ -546,9 +547,8 @@ impl App {
                                         view.last_key = Some("h/left".into());
                                     }
                                     Mode::Spritz => {
-                                        if let Some(spritz) = &mut self.spritz {
-                                            spritz.rewind(1);
-                                        }
+                                        width = width.saturating_sub(2);
+                                        last_inner = (width, last_inner.1);
                                     }
                                     Mode::Toc => {}
                                 },
@@ -565,9 +565,8 @@ impl App {
                                         view.last_key = Some("l/right".into());
                                     }
                                     Mode::Spritz => {
-                                        if let Some(spritz) = &mut self.spritz {
-                                            spritz.fast_forward(1);
-                                        }
+                                        width = width.saturating_add(2);
+                                        last_inner = (width, last_inner.1);
                                     }
                                     Mode::Toc => {}
                                 },

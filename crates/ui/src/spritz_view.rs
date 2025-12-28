@@ -169,7 +169,22 @@ impl SpritzView {
         }
     }
 
-    pub fn render(&self, f: &mut Frame<'_>, area: Rect) {
+    pub fn render(&self, f: &mut Frame<'_>, area: Rect, column_width: u16) {
+        let vchunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(area);
+        let content_area = vchunks[0];
+
+        let col_w = column_width.min(content_area.width);
+        let left_pad = content_area.width.saturating_sub(col_w) / 2;
+        let centered = Rect {
+            x: content_area.x + left_pad,
+            y: content_area.y,
+            width: col_w,
+            height: content_area.height.saturating_sub(2),
+        };
+
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -178,7 +193,7 @@ impl SpritzView {
                 Constraint::Length(1),
                 Constraint::Length(1),
             ])
-            .split(area);
+            .split(centered);
 
         let header_area = chunks[0];
         let word_area = chunks[1];
