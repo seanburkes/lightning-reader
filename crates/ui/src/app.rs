@@ -339,17 +339,32 @@ impl App {
                 }
                 if self.show_help {
                     let popup_area = centered_rect(70, 70, size);
-                    let help_lines = vec![
-                        "q / Ctrl-C: quit",
-                        "j / k or arrows: scroll lines",
-                        "PageUp / PageDown: jump half-page",
-                        "h / l or arrows: adjust column width",
-                        "t: toggle table of contents; Enter to jump; Esc to close TOC",
-                        "/: search; Enter to submit; Esc to cancel",
-                        "J: toggle justification (persists)",
-                        "b: toggle two-page spread (persists)",
-                        "?: toggle this help",
-                    ];
+                    let help_lines = match self.mode {
+                        Mode::Spritz => vec![
+                            "q / Ctrl-C / s / Esc: exit spritz mode",
+                            "Space: toggle play/pause",
+                            "j/k or arrows: navigate word-by-word",
+                            "Ctrl+j/Ctrl+k: jump 10 words",
+                            "+/- or =/_: adjust WPM by 10",
+                            "[ / ]: adjust WPM by 50",
+                            "r: rewind to chapter start",
+                            "f: fast forward to chapter end",
+                            "Enter: resume playing if paused",
+                            "?: toggle this help",
+                        ],
+                        _ => vec![
+                            "q / Ctrl-C: quit",
+                            "s: toggle spritz speed reading mode",
+                            "j / k or arrows: scroll lines",
+                            "PageUp / PageDown: jump half-page",
+                            "h / l or arrows: adjust column width",
+                            "t: toggle table of contents; Enter to jump; Esc to close TOC",
+                            "/: search; Enter to submit; Esc to cancel",
+                            "J: toggle justification (persists)",
+                            "b: toggle two-page spread (persists)",
+                            "?: toggle this help",
+                        ],
+                    };
                     let help = Paragraph::new(help_lines.join("\n"))
                         .block(
                             UiBlock::default()
@@ -495,7 +510,11 @@ impl App {
                                             t.down();
                                         }
                                     }
-                                    Mode::Spritz => {}
+                                    Mode::Spritz => {
+                                        if let Some(spritz) = &mut self.spritz {
+                                            spritz.fast_forward(1);
+                                        }
+                                    }
                                 },
                                 KeyCode::Char('k') | KeyCode::Up => match self.mode {
                                     Mode::Reader => {
@@ -507,11 +526,15 @@ impl App {
                                             t.up();
                                         }
                                     }
-                                    Mode::Spritz => {}
+                                    Mode::Spritz => {
+                                        if let Some(spritz) = &mut self.spritz {
+                                            spritz.rewind(1);
+                                        }
+                                    }
                                 },
 
-                                KeyCode::Char('h') | KeyCode::Left => {
-                                    if let Mode::Reader = self.mode {
+                                KeyCode::Char('h') | KeyCode::Left => match self.mode {
+                                    Mode::Reader => {
                                         width = width.saturating_sub(2);
                                         let inner = ReaderView::inner_size(
                                             terminal.size()?,
@@ -522,9 +545,15 @@ impl App {
                                         last_inner = (inner.width, inner.height);
                                         view.last_key = Some("h/left".into());
                                     }
-                                }
-                                KeyCode::Char('l') | KeyCode::Right => {
-                                    if let Mode::Reader = self.mode {
+                                    Mode::Spritz => {
+                                        if let Some(spritz) = &mut self.spritz {
+                                            spritz.rewind(1);
+                                        }
+                                    }
+                                    Mode::Toc => {}
+                                },
+                                KeyCode::Char('l') | KeyCode::Right => match self.mode {
+                                    Mode::Reader => {
                                         width = width.saturating_add(2);
                                         let inner = ReaderView::inner_size(
                                             terminal.size()?,
@@ -535,7 +564,13 @@ impl App {
                                         last_inner = (inner.width, inner.height);
                                         view.last_key = Some("l/right".into());
                                     }
-                                }
+                                    Mode::Spritz => {
+                                        if let Some(spritz) = &mut self.spritz {
+                                            spritz.fast_forward(1);
+                                        }
+                                    }
+                                    Mode::Toc => {}
+                                },
                                 KeyCode::PageDown => {
                                     if let Mode::Reader = self.mode {
                                         view.down((height / 2) as usize);
@@ -594,6 +629,86 @@ impl App {
                                             }
                                             .into(),
                                         );
+                                    }
+                                }
+                                KeyCode::Char(' ') => {
+                                    if let Mode::Spritz = self.mode {
+                                        if let Some(spritz) = &mut self.spritz {
+                                            spritz.toggle_play();
+                                        }
+                                    }
+                                }
+                                KeyCode::Enter => {
+                                    if let Mode::Spritz = self.mode {
+                                        if let Some(spritz) = &mut self.spritz {
+                                            if !spritz.is_playing {
+                                                spritz.play();
+                                            }
+                                        }
+                                    }
+                                }
+                                KeyCode::Char('r') => {
+                                    if let Mode::Spritz = self.mode {
+                                        if let Some(spritz) = &mut self.spritz {
+                                            spritz.jump_to_chapter_start();
+                                        }
+                                    }
+                                }
+                                KeyCode::Char('f') => {
+                                    if let Mode::Spritz = self.mode {
+                                        if let Some(spritz) = &mut self.spritz {
+                                            spritz.jump_to_chapter_end();
+                                        }
+                                    }
+                                }
+                                KeyCode::Char('+') | KeyCode::Char('=') => {
+                                    if let Mode::Spritz = self.mode {
+                                        if let Some(spritz) = &mut self.spritz {
+                                            spritz.adjust_wpm(10);
+                                        }
+                                    }
+                                }
+                                KeyCode::Char('-') | KeyCode::Char('_') => {
+                                    if let Mode::Spritz = self.mode {
+                                        if let Some(spritz) = &mut self.spritz {
+                                            spritz.adjust_wpm(-10);
+                                        }
+                                    }
+                                }
+                                KeyCode::Char(']') => {
+                                    if let Mode::Spritz = self.mode {
+                                        if let Some(spritz) = &mut self.spritz {
+                                            spritz.adjust_wpm(50);
+                                        }
+                                    }
+                                }
+                                KeyCode::Char('[') => {
+                                    if let Mode::Spritz = self.mode {
+                                        if let Some(spritz) = &mut self.spritz {
+                                            spritz.adjust_wpm(-50);
+                                        }
+                                    }
+                                }
+                                KeyCode::Char('j')
+                                    if key
+                                        .modifiers
+                                        .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                                {
+                                    if let Mode::Spritz = self.mode {
+                                        if let Some(spritz) = &mut self.spritz {
+                                            spritz.fast_forward(10);
+                                        }
+                                    }
+                                }
+                                KeyCode::Char('k')
+                                    if key
+                                        .modifiers
+                                        .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                                {
+                                    if let Mode::Spritz = self.mode {
+                                        if let Some(spritz) = &mut self.spritz {
+                                            spritz.rewind(10);
+                                        }
                                     }
                                 }
                                 KeyCode::Char('?') => {
