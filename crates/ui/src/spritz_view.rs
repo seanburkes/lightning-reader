@@ -257,13 +257,15 @@ impl SpritzView {
 
         f.render_widget(Clear, area);
 
+        let orp_target_x = area.x + area.width / 2;
         let orp_target_y = area.y + (area.height as f32 * 0.35) as u16;
+        let word_start_x = orp_target_x.saturating_sub(orp as u16);
         let word_height = 1;
 
         let word_area = Rect {
-            x: area.x,
+            x: word_start_x,
             y: orp_target_y.saturating_sub(word_height),
-            width: area.width,
+            width: area.width.saturating_sub(word_start_x - area.x),
             height: word_height,
         };
 
