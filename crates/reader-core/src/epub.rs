@@ -91,13 +91,18 @@ fn read_opf(zip: &mut ZipArchive<File>, opf_path: &Path) -> Result<OpfResult, Re
     let mut reader = XmlReader::from_str(&opf_xml);
     let mut manifest: Vec<ManifestItem> = Vec::new();
     let mut spine_ids: Vec<String> = Vec::new();
-    let mut title: Option<String> = None;
-    let mut author: Option<String> = None;
+    let mut titles: Vec<String> = Vec::new();
+    let mut creators: Vec<String> = Vec::new();
     let mut spine_toc: Option<String> = None;
+    let mut in_metadata = false;
     loop {
         match reader.read_event() {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                 let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                let local = local_name(&name);
+                if local == "metadata" {
+                    in_metadata = true;
+                }
                 if name.ends_with("item") {
                     let mut id = String::new();
                     let mut href = String::new();
@@ -141,7 +146,7 @@ fn read_opf(zip: &mut ZipArchive<File>, opf_path: &Path) -> Result<OpfResult, Re
                             spine_ids.push(sval);
                         }
                     }
-                } else if name.ends_with("spine") && spine_toc.is_none() {
+                } else if local == "spine" && spine_toc.is_none() {
                     for a in e.attributes().flatten() {
                         let key = String::from_utf8_lossy(a.key.as_ref());
                         if key.ends_with("toc") {
@@ -151,16 +156,56 @@ fn read_opf(zip: &mut ZipArchive<File>, opf_path: &Path) -> Result<OpfResult, Re
                             spine_toc = Some(val.into_owned());
                         }
                     }
-                } else if name.ends_with("title") {
-                    if let Ok(Event::Text(t)) = reader.read_event() {
-                        let s = String::from_utf8_lossy(t.as_ref()).to_string();
-                        title = Some(s);
+                } else if in_metadata && local == "title" {
+                    if let Some(text) = read_text_value(&mut reader) {
+                        let text = normalize_meta_text(&text);
+                        if !text.is_empty() {
+                            titles.push(text);
+                        }
                     }
-                } else if name.ends_with("creator") || name.ends_with("author") {
-                    if let Ok(Event::Text(t)) = reader.read_event() {
-                        let s = String::from_utf8_lossy(t.as_ref()).to_string();
-                        author = Some(s);
+                } else if in_metadata && (local == "creator" || local == "author") {
+                    if let Some(text) = read_text_value(&mut reader) {
+                        let text = normalize_meta_text(&text);
+                        if !text.is_empty() {
+                            creators.push(text);
+                        }
                     }
+                } else if in_metadata && local == "meta" {
+                    let mut meta_name: Option<String> = None;
+                    let mut meta_property: Option<String> = None;
+                    let mut meta_content: Option<String> = None;
+                    for a in e.attributes().flatten() {
+                        let key = String::from_utf8_lossy(a.key.as_ref());
+                        let val = a
+                            .unescape_value()
+                            .map_err(|e| ReaderError::Parse(e.to_string()))?;
+                        let sval = val.into_owned();
+                        let attr = local_name(&key);
+                        match attr {
+                            "name" => meta_name = Some(sval),
+                            "property" => meta_property = Some(sval),
+                            "content" => meta_content = Some(sval),
+                            _ => {}
+                        }
+                    }
+                    if let Some(content) = meta_content {
+                        let content = normalize_meta_text(&content);
+                        if !content.is_empty() {
+                            if meta_matches(&meta_name, &meta_property, "title") {
+                                titles.push(content.clone());
+                            } else if meta_matches(&meta_name, &meta_property, "creator")
+                                || meta_matches(&meta_name, &meta_property, "author")
+                            {
+                                creators.push(content.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(Event::End(e)) => {
+                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                if local_name(&name) == "metadata" {
+                    in_metadata = false;
                 }
             }
             Ok(Event::Eof) => break,
@@ -168,6 +213,12 @@ fn read_opf(zip: &mut ZipArchive<File>, opf_path: &Path) -> Result<OpfResult, Re
             _ => {}
         }
     }
+    let title = titles.into_iter().next();
+    let author = if creators.is_empty() {
+        None
+    } else {
+        Some(creators.join(", "))
+    };
     Ok((title, manifest, spine_ids, author, spine_toc))
 }
 
@@ -270,4 +321,42 @@ fn properties_has_nav(properties: &str) -> bool {
 
 fn is_ncx_media_type(media_type: &str) -> bool {
     media_type.eq_ignore_ascii_case("application/x-dtbncx+xml")
+}
+
+fn local_name(name: &str) -> &str {
+    name.rsplit(':').next().unwrap_or(name)
+}
+
+fn read_text_value(reader: &mut XmlReader<&[u8]>) -> Option<String> {
+    match reader.read_event() {
+        Ok(Event::Text(t)) => Some(String::from_utf8_lossy(t.as_ref()).to_string()),
+        Ok(Event::CData(t)) => Some(String::from_utf8_lossy(t.as_ref()).to_string()),
+        _ => None,
+    }
+}
+
+fn normalize_meta_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut last_space = false;
+    for ch in s.chars() {
+        if ch.is_whitespace() {
+            if !last_space {
+                out.push(' ');
+            }
+            last_space = true;
+        } else {
+            out.push(ch);
+            last_space = false;
+        }
+    }
+    out.trim().to_string()
+}
+
+fn meta_matches(name: &Option<String>, property: &Option<String>, needle: &str) -> bool {
+    let matches = |value: &str| {
+        let lower = value.to_ascii_lowercase();
+        lower.contains(needle)
+    };
+    name.as_deref().map(matches).unwrap_or(false)
+        || property.as_deref().map(matches).unwrap_or(false)
 }
