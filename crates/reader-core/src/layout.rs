@@ -44,15 +44,17 @@ pub fn extract_words(blocks: &[Block]) -> Vec<WordToken> {
     let mut current_chapter: Option<usize> = None;
     let mut chapter_counter = 0;
 
-    for block in blocks {
+    for (idx, block) in blocks.iter().enumerate() {
         match block {
             Block::Code { .. } => {
                 continue;
             }
             Block::Paragraph(text) => {
                 if text.trim() == "───" {
-                    chapter_counter += 1;
-                    current_chapter = Some(chapter_counter);
+                    if is_chapter_separator(blocks, idx) {
+                        chapter_counter += 1;
+                        current_chapter = Some(chapter_counter);
+                    }
                     continue;
                 }
                 if text.trim() == "[image]" {
@@ -119,6 +121,30 @@ impl WordToken {
     }
 }
 
+fn is_chapter_separator(blocks: &[Block], idx: usize) -> bool {
+    let Block::Paragraph(text) = &blocks[idx] else {
+        return false;
+    };
+    if text.trim() != "───" {
+        return false;
+    }
+    let prev_empty = idx
+        .checked_sub(1)
+        .and_then(|i| match &blocks[i] {
+            Block::Paragraph(prev) if prev.trim().is_empty() => Some(()),
+            _ => None,
+        })
+        .is_some();
+    let next_empty = blocks
+        .get(idx + 1)
+        .and_then(|b| match b {
+            Block::Paragraph(next) if next.trim().is_empty() => Some(()),
+            _ => None,
+        })
+        .is_some();
+    prev_empty && next_empty
+}
+
 pub fn paginate(blocks: &[Block], size: Size) -> Vec<Page> {
     paginate_with_justify(blocks, size, false).pages
 }
@@ -130,7 +156,7 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
     let mut chapter_starts: Vec<usize> = Vec::new();
     let mut at_page_index: usize = pages.len();
     let mut pending_chapter_start: Option<usize> = Some(0); // initial chapter starts at page 0
-    for block in blocks {
+    for (idx, block) in blocks.iter().enumerate() {
         match block {
             Block::Paragraph(text) => {
                 // If a separator was seen, mark the next content start as a chapter start
@@ -138,7 +164,7 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
                     chapter_starts.push(start_idx);
                 }
                 // Detect separator and set the next start index
-                if text.trim() == "───" {
+                if is_chapter_separator(blocks, idx) {
                     pending_chapter_start = Some(at_page_index);
                 }
                 let lines = wrap_text(text, size.width as usize);
