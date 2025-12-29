@@ -122,8 +122,7 @@ fn read_opf(zip: &mut ZipArchive<File>, opf_path: &Path) -> Result<OpfResult, Re
                         }
                         if key.ends_with("media-type") {
                             media = Some(sval);
-                        }
-                        if key.ends_with("properties") {
+                        } else if key.ends_with("properties") {
                             properties = Some(sval);
                         }
                     }

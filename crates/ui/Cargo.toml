@@ -10,3 +10,4 @@ reader-core = { path = "../reader-core" }
 unicode-segmentation = "1.11"
 dirs = "6.0"
 chrono = { version = "0.4", default-features = false }
+arboard = "3.4"

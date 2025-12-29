@@ -48,6 +48,38 @@ pub struct ReaderView {
     pub theme: Theme,
     pub total_pages: Option<usize>,
     pub toc_overrides: Vec<reader_core::pdf::OutlineEntry>,
+    pub selection: Option<SelectionRange>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SelectionPoint {
+    pub page: usize,
+    pub line: usize,
+    pub col: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SelectionRange {
+    pub start: SelectionPoint,
+    pub end: SelectionPoint,
+}
+
+impl SelectionRange {
+    pub fn normalized(self) -> (SelectionPoint, SelectionPoint) {
+        let a = (self.start.page, self.start.line, self.start.col);
+        let b = (self.end.page, self.end.line, self.end.col);
+        if a <= b {
+            (self.start, self.end)
+        } else {
+            (self.end, self.start)
+        }
+    }
+}
+
+pub struct ContentAreas {
+    pub body: Rect,
+    pub left: Rect,
+    pub right: Option<Rect>,
 }
 
 impl Default for ReaderView {
@@ -71,6 +103,65 @@ impl ReaderView {
             theme: Theme::default(),
             total_pages: None,
             toc_overrides: Vec::new(),
+            selection: None,
+        }
+    }
+
+    pub fn content_areas(&self, area: Rect, column_width: u16) -> ContentAreas {
+        let vchunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(area);
+        let content_area = vchunks[0];
+        let col_w = if self.two_pane {
+            let total = column_width
+                .saturating_mul(2)
+                .saturating_add(SPREAD_GAP)
+                .min(content_area.width);
+            total
+        } else {
+            column_width.min(content_area.width)
+        };
+        let left_pad = content_area.width.saturating_sub(col_w) / 2;
+        let centered = Rect {
+            x: content_area.x + left_pad,
+            y: content_area.y,
+            width: col_w,
+            height: content_area.height,
+        };
+        let header_footer_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ])
+            .split(centered);
+        let para_area = header_footer_chunks[1];
+        if self.two_pane && col_w > 6 {
+            let gap = SPREAD_GAP.min(col_w.saturating_sub(2));
+            let remaining = col_w.saturating_sub(gap);
+            let left_w = remaining / 2;
+            let right_w = remaining.saturating_sub(left_w);
+            let spreads = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Length(left_w),
+                    Constraint::Length(gap),
+                    Constraint::Length(right_w),
+                ])
+                .split(para_area);
+            ContentAreas {
+                body: para_area,
+                left: spreads[0],
+                right: Some(spreads[2]),
+            }
+        } else {
+            ContentAreas {
+                body: para_area,
+                left: para_area,
+                right: None,
+            }
         }
     }
 
@@ -430,7 +521,13 @@ impl ReaderView {
         if let Some(page) = self.pages.get(idx) {
             page.lines
                 .iter()
-                .map(|l| Self::highlight_line(l, highlight))
+                .enumerate()
+                .map(|(line_idx, l)| {
+                    let sel = self
+                        .selection
+                        .and_then(|selection| selection_for_line(selection, idx, line_idx, l));
+                    Self::highlight_line(l, highlight, sel)
+                })
                 .collect()
         } else {
             vec![ratatui::text::Line::from("")] // empty placeholder for missing spread page
@@ -440,7 +537,11 @@ impl ReaderView {
     fn highlight_line<'a>(
         line: &'a StyledLine,
         highlight: Option<&str>,
+        selection: Option<(usize, usize)>,
     ) -> ratatui::text::Line<'a> {
+        if let Some((start, end)) = selection {
+            return Self::selection_line(line, start, end);
+        }
         let needle = highlight
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
@@ -500,6 +601,85 @@ impl ReaderView {
             style = style.bg(Color::Rgb(rgb.r, rgb.g, rgb.b));
         }
         style
+    }
+
+    fn selection_line<'a>(
+        line: &'a StyledLine,
+        sel_start: usize,
+        sel_end: usize,
+    ) -> ratatui::text::Line<'a> {
+        let mut spans: Vec<Span<'a>> = Vec::new();
+        let mut offset = 0;
+        for seg in &line.segments {
+            let base_style = Self::segment_style(seg);
+            let seg_text = seg.text.as_str();
+            let seg_len = seg_text.graphemes(true).count();
+            let seg_start = offset;
+            let seg_end = offset + seg_len;
+            if sel_end <= seg_start || sel_start >= seg_end {
+                spans.push(Span::styled(seg_text.to_string(), base_style));
+            } else {
+                let local_start = sel_start.saturating_sub(seg_start).min(seg_len);
+                let local_end = sel_end.saturating_sub(seg_start).min(seg_len);
+                let gs: Vec<&str> = seg_text.graphemes(true).collect();
+                if local_start > 0 {
+                    spans.push(Span::styled(gs[..local_start].concat(), base_style));
+                }
+                if local_end > local_start {
+                    let sel_style = base_style.bg(Color::DarkGray);
+                    spans.push(Span::styled(
+                        gs[local_start..local_end].concat(),
+                        sel_style,
+                    ));
+                }
+                if local_end < seg_len {
+                    spans.push(Span::styled(gs[local_end..].concat(), base_style));
+                }
+            }
+            offset += seg_len;
+        }
+        ratatui::text::Line::from(spans)
+    }
+}
+
+fn selection_for_line(
+    selection: SelectionRange,
+    page_idx: usize,
+    line_idx: usize,
+    line: &StyledLine,
+) -> Option<(usize, usize)> {
+    let line_len = line
+        .segments
+        .iter()
+        .map(|seg| seg.text.graphemes(true).count())
+        .sum();
+    if line_len == 0 {
+        return None;
+    }
+    let (start, end) = selection.normalized();
+    if page_idx < start.page || page_idx > end.page {
+        return None;
+    }
+    if page_idx == start.page && line_idx < start.line {
+        return None;
+    }
+    if page_idx == end.page && line_idx > end.line {
+        return None;
+    }
+    let start_col = if page_idx == start.page && line_idx == start.line {
+        start.col.min(line_len)
+    } else {
+        0
+    };
+    let end_col = if page_idx == end.page && line_idx == end.line {
+        end.col.min(line_len)
+    } else {
+        line_len
+    };
+    if start_col == end_col {
+        None
+    } else {
+        Some((start_col.min(end_col), end_col.max(start_col)))
     }
 }
 
@@ -574,7 +754,7 @@ mod tests {
                 bg: None,
             }],
         };
-        let line = ReaderView::highlight_line(&styled, Some("world"));
+        let line = ReaderView::highlight_line(&styled, Some("world"), None);
         assert_eq!(line.spans.len(), 2);
         assert_eq!(line.spans[0].content, "Hello ");
         assert_eq!(line.spans[1].content, "World");
@@ -590,7 +770,7 @@ mod tests {
                 bg: None,
             }],
         };
-        let line = ReaderView::highlight_line(&styled, Some("ba"));
+        let line = ReaderView::highlight_line(&styled, Some("ba"), None);
         assert_eq!(line.spans.len(), 4); // "a" + "ba" + " " + "ba"
         assert_eq!(line.spans[1].content, "ba");
         assert_eq!(line.spans[1].style.bg, Some(Color::Yellow));
