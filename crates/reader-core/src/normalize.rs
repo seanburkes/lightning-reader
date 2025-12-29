@@ -113,6 +113,10 @@ pub fn html_to_blocks(html: &str) -> Vec<Block> {
     blocks
 }
 
+const STYLE_START: char = '\x1E';
+const STYLE_END: char = '\x1F';
+const BR_MARKER: char = '\x1D';
+
 fn inline_text(node: &NodeRef) -> String {
     let mut out = String::new();
     append_inline_text(node, &mut out);
@@ -132,7 +136,7 @@ fn append_inline_text(node: &NodeRef, out: &mut String) {
     };
     let tag = el.name.local.to_lowercase();
     match tag.as_str() {
-        "br" => out.push('\n'),
+        "br" => out.push(BR_MARKER),
         "a" => {
             let label = collect_inline_children(node);
             let href = el.attributes.borrow().get("href").map(|s| s.to_string());
@@ -152,10 +156,21 @@ fn append_inline_text(node: &NodeRef, out: &mut String) {
             }
         }
         "img" => out.push_str(&image_placeholder(node)),
-        "em" | "i" => append_wrapped_marker(node, out, "*"),
-        "strong" | "b" => append_wrapped_marker(node, out, "**"),
-        "code" | "kbd" | "samp" => append_wrapped_marker(node, out, "`"),
-        "del" | "s" | "strike" => append_wrapped_marker(node, out, "~~"),
+        "em" | "i" => append_wrapped_style(node, out, 'i'),
+        "strong" | "b" => append_wrapped_style(node, out, 'b'),
+        "code" | "kbd" | "samp" => append_wrapped_style(node, out, 'c'),
+        "del" | "s" | "strike" => append_wrapped_style(node, out, 'x'),
+        "u" => append_wrapped_style(node, out, 'u'),
+        "span" => {
+            let styles = span_style_codes(el);
+            if styles.is_empty() {
+                for child in node.children() {
+                    append_inline_text(&child, out);
+                }
+            } else {
+                append_wrapped_styles(node, out, &styles);
+            }
+        }
         "sup" => append_wrapped_pair(node, out, "^{", "}"),
         "sub" => append_wrapped_pair(node, out, "_{", "}"),
         "abbr" => {
@@ -227,7 +242,7 @@ fn append_inline_text_without_lists(node: &NodeRef, out: &mut String) {
         return;
     }
     match tag.as_str() {
-        "br" => out.push('\n'),
+        "br" => out.push(BR_MARKER),
         "a" => {
             let label = collect_inline_children(node);
             let href = el.attributes.borrow().get("href").map(|s| s.to_string());
@@ -247,10 +262,21 @@ fn append_inline_text_without_lists(node: &NodeRef, out: &mut String) {
             }
         }
         "img" => out.push_str(&image_placeholder(node)),
-        "em" | "i" => append_wrapped_marker(node, out, "*"),
-        "strong" | "b" => append_wrapped_marker(node, out, "**"),
-        "code" | "kbd" | "samp" => append_wrapped_marker(node, out, "`"),
-        "del" | "s" | "strike" => append_wrapped_marker(node, out, "~~"),
+        "em" | "i" => append_wrapped_style(node, out, 'i'),
+        "strong" | "b" => append_wrapped_style(node, out, 'b'),
+        "code" | "kbd" | "samp" => append_wrapped_style(node, out, 'c'),
+        "del" | "s" | "strike" => append_wrapped_style(node, out, 'x'),
+        "u" => append_wrapped_style(node, out, 'u'),
+        "span" => {
+            let styles = span_style_codes(el);
+            if styles.is_empty() {
+                for child in node.children() {
+                    append_inline_text_without_lists(&child, out);
+                }
+            } else {
+                append_wrapped_styles(node, out, &styles);
+            }
+        }
         "sup" => append_wrapped_pair(node, out, "^{", "}"),
         "sub" => append_wrapped_pair(node, out, "_{", "}"),
         "abbr" => {
@@ -292,14 +318,28 @@ fn append_inline_text_without_lists(node: &NodeRef, out: &mut String) {
     }
 }
 
-fn append_wrapped_marker(node: &NodeRef, out: &mut String, marker: &str) {
+fn append_wrapped_style(node: &NodeRef, out: &mut String, code: char) {
     let label = collect_inline_children(node);
     if label.is_empty() {
         return;
     }
-    out.push_str(marker);
+    push_style_start(out, code);
     out.push_str(&label);
-    out.push_str(marker);
+    push_style_end(out, code);
+}
+
+fn append_wrapped_styles(node: &NodeRef, out: &mut String, codes: &[char]) {
+    let label = collect_inline_children(node);
+    if label.is_empty() {
+        return;
+    }
+    for code in codes {
+        push_style_start(out, *code);
+    }
+    out.push_str(&label);
+    for code in codes.iter().rev() {
+        push_style_end(out, *code);
+    }
 }
 
 fn append_wrapped_pair(node: &NodeRef, out: &mut String, prefix: &str, suffix: &str) {
@@ -312,6 +352,62 @@ fn append_wrapped_pair(node: &NodeRef, out: &mut String, prefix: &str, suffix: &
     out.push_str(suffix);
 }
 
+fn push_style_start(out: &mut String, code: char) {
+    out.push(STYLE_START);
+    out.push(code);
+}
+
+fn push_style_end(out: &mut String, code: char) {
+    out.push(STYLE_END);
+    out.push(code);
+}
+
+fn span_style_codes(el: &kuchiki::ElementData) -> Vec<char> {
+    let attrs = el.attributes.borrow();
+    let mut codes: Vec<char> = Vec::new();
+    if let Some(style) = attrs.get("style") {
+        let style = style.to_ascii_lowercase();
+        if style.contains("font-style: italic") {
+            push_unique_style(&mut codes, 'i');
+        }
+        if style.contains("font-weight: bold")
+            || style.contains("font-weight: 600")
+            || style.contains("font-weight: 700")
+            || style.contains("font-weight: 800")
+            || style.contains("font-weight: 900")
+        {
+            push_unique_style(&mut codes, 'b');
+        }
+        if style.contains("text-decoration: underline")
+            || style.contains("text-decoration-line: underline")
+        {
+            push_unique_style(&mut codes, 'u');
+        }
+        if style.contains("font-variant: small-caps")
+            || style.contains("font-variant-caps: small-caps")
+        {
+            push_unique_style(&mut codes, 's');
+        }
+    }
+    if let Some(class_attr) = attrs.get("class") {
+        let class_attr = class_attr.to_ascii_lowercase();
+        if class_attr.contains("small-caps")
+            || class_attr.contains("smallcaps")
+            || class_attr.contains("small_caps")
+            || class_attr.contains("smcap")
+        {
+            push_unique_style(&mut codes, 's');
+        }
+    }
+    codes
+}
+
+fn push_unique_style(codes: &mut Vec<char>, code: char) {
+    if !codes.contains(&code) {
+        codes.push(code);
+    }
+}
+
 fn normalize_inline_text(s: &str) -> String {
     let s = s
         .replace('\u{00A0}', " ")
@@ -320,8 +416,10 @@ fn normalize_inline_text(s: &str) -> String {
             ['\u{200B}', '\u{200C}', '\u{200D}', '\u{200E}', '\u{200F}'],
             "",
         )
-        .replace(['\u{2028}', '\u{2029}'], "\n")
+        .replace(['\u{2028}', '\u{2029}'], " ")
         .replace('\u{FEFF}', "");
+    let s = s.replace('\n', " ");
+    let s = s.replace(BR_MARKER, "\n");
     normalize_lines(&s)
 }
 
@@ -560,6 +658,19 @@ pub fn postprocess_blocks(mut blocks: Vec<Block>) -> Vec<Block> {
 mod tests {
     use super::*;
 
+    fn strip_inline_markers(input: &str) -> String {
+        let mut out = String::with_capacity(input.len());
+        let mut chars = input.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == STYLE_START || ch == STYLE_END {
+                let _ = chars.next();
+                continue;
+            }
+            out.push(ch);
+        }
+        out
+    }
+
     #[test]
     fn preserves_dom_order() {
         let html = r#"
@@ -582,11 +693,21 @@ mod tests {
         <a href="https://example.com">link</a>.</p>
         "#;
         let blocks = html_to_blocks(html);
+        let Block::Paragraph(text) = &blocks[0] else {
+            panic!("expected paragraph");
+        };
+        assert!(text.contains(STYLE_START));
+        let stripped = strip_inline_markers(text);
         assert!(matches!(
             blocks[0],
             Block::Paragraph(ref t)
-                if t == "Read *this* and **that**, see link (https://example.com)."
+                if strip_inline_markers(t)
+                    == "Read this and that, see link (https://example.com)."
         ));
+        assert_eq!(
+            stripped,
+            "Read this and that, see link (https://example.com)."
+        );
     }
 
     #[test]

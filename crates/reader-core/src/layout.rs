@@ -18,17 +18,60 @@ pub struct StyledLine {
     pub segments: Vec<Segment>,
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct TextStyle {
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub dim: bool,
+    pub reverse: bool,
+    pub strike: bool,
+    pub small_caps: bool,
+}
+
+const STYLE_START: char = '\x1E';
+const STYLE_END: char = '\x1F';
+
 #[derive(Clone)]
 pub struct Segment {
     pub text: String,
     pub fg: Option<crate::types::RgbColor>,
     pub bg: Option<crate::types::RgbColor>,
+    pub style: TextStyle,
 }
 
 #[derive(Clone)]
 pub struct Pagination {
     pub pages: Vec<Page>,
     pub chapter_starts: Vec<usize>, // page indices where a chapter begins
+}
+
+#[derive(Clone)]
+struct InlineSpan {
+    text: String,
+    style: TextStyle,
+}
+
+#[derive(Default)]
+struct StyleCounts {
+    bold: u16,
+    italic: u16,
+    underline: u16,
+    code: u16,
+    strike: u16,
+    small_caps: u16,
+}
+
+#[derive(Clone)]
+struct InlineWord {
+    segments: Vec<Segment>,
+    width: usize,
+}
+
+enum InlineToken {
+    Word(InlineWord),
+    Space(TextStyle),
+    Newline,
 }
 
 #[derive(Clone, Debug)]
@@ -50,37 +93,41 @@ pub fn extract_words(blocks: &[Block]) -> Vec<WordToken> {
                 continue;
             }
             Block::Paragraph(text) => {
-                if text.trim() == "───" {
+                let cleaned = strip_style_markers(text);
+                if cleaned.trim() == "───" {
                     if is_chapter_separator(blocks, idx) {
                         chapter_counter += 1;
                         current_chapter = Some(chapter_counter);
                     }
                     continue;
                 }
-                if text.trim() == "[image]" {
+                if cleaned.trim() == "[image]" {
                     continue;
                 }
-                for word in text.split_whitespace() {
+                for word in cleaned.split_whitespace() {
                     let token = WordToken::from_word(word.to_string(), current_chapter);
                     words.push(token);
                 }
             }
             Block::Heading(text, _) => {
-                for word in text.split_whitespace() {
+                let cleaned = strip_style_markers(text);
+                for word in cleaned.split_whitespace() {
                     let token = WordToken::from_word(word.to_string(), current_chapter);
                     words.push(token);
                 }
             }
             Block::List(items) => {
                 for item in items {
-                    for word in item.split_whitespace() {
+                    let cleaned = strip_style_markers(item);
+                    for word in cleaned.split_whitespace() {
                         let token = WordToken::from_word(word.to_string(), current_chapter);
                         words.push(token);
                     }
                 }
             }
             Block::Quote(text) => {
-                for word in text.split_whitespace() {
+                let cleaned = strip_style_markers(text);
+                for word in cleaned.split_whitespace() {
                     let token = WordToken::from_word(word.to_string(), current_chapter);
                     words.push(token);
                 }
@@ -145,6 +192,22 @@ fn is_chapter_separator(blocks: &[Block], idx: usize) -> bool {
     prev_empty && next_empty
 }
 
+fn strip_style_markers(input: &str) -> String {
+    if !input.contains(STYLE_START) && !input.contains(STYLE_END) {
+        return input.to_string();
+    }
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == STYLE_START || ch == STYLE_END {
+            let _ = chars.next();
+            continue;
+        }
+        out.push(ch);
+    }
+    out
+}
+
 pub fn paginate(blocks: &[Block], size: Size) -> Vec<Page> {
     paginate_with_justify(blocks, size, false).pages
 }
@@ -155,17 +218,15 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
     let mut current = Page { lines: Vec::new() };
     let mut chapter_starts: Vec<usize> = Vec::new();
     let mut at_page_index: usize = pages.len();
-    let mut push_line = |line: StyledLine,
-                         pages: &mut Vec<Page>,
-                         current: &mut Page,
-                         at_page_index: &mut usize| {
-        current.lines.push(line);
-        if current.lines.len() as u16 >= size.height {
-            pages.push(current.clone());
-            *current = Page { lines: Vec::new() };
-            *at_page_index += 1;
-        }
-    };
+    let push_line =
+        |line: StyledLine, pages: &mut Vec<Page>, current: &mut Page, at_page_index: &mut usize| {
+            current.lines.push(line);
+            if current.lines.len() as u16 >= size.height {
+                pages.push(current.clone());
+                *current = Page { lines: Vec::new() };
+                *at_page_index += 1;
+            }
+        };
     let mut pending_chapter_start: Option<usize> = Some(0); // initial chapter starts at page 0
     for (idx, block) in blocks.iter().enumerate() {
         match block {
@@ -178,20 +239,15 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
                 if is_chapter_separator(blocks, idx) {
                     pending_chapter_start = Some(at_page_index);
                 }
-                let lines = wrap_text(text, size.width as usize);
+                let lines = wrap_styled_text(text, size.width as usize);
                 for i in 0..lines.len() {
-                    let is_last = i == lines.len() - 1;
+                    let is_last = i == lines.len().saturating_sub(1);
                     let line = if justify && !is_last {
-                        justify_line(&lines[i], size.width as usize)
+                        justify_styled_line(&lines[i], size.width as usize)
                     } else {
                         lines[i].clone()
                     };
-                    push_line(
-                        StyledLine::from_plain(line),
-                        &mut pages,
-                        &mut current,
-                        &mut at_page_index,
-                    );
+                    push_line(line, &mut pages, &mut current, &mut at_page_index);
                 }
                 // blank line between paragraphs
                 push_line(
@@ -208,18 +264,19 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
                 // Two-space indent; add a rule when there is room
                 let show_rule = size.width >= 16;
                 let prefix = if show_rule { "│ " } else { "  " };
-                let prefix_width = prefix.graphemes(true).count() as u16;
-                let eff_width = size.width.saturating_sub(prefix_width) as usize;
+                let max_width = size.width.max(4) as usize;
                 // Preserve line breaks like a code/pre block; truncate when too long
                 for raw_line in text.lines() {
-                    let clipped = truncate_graphemes(raw_line, eff_width.max(4));
-                    let prefixed = format!("{}{}", prefix, clipped);
-                    push_line(
-                        StyledLine::from_plain(prefixed),
-                        &mut pages,
-                        &mut current,
-                        &mut at_page_index,
-                    );
+                    let mut segs = Vec::new();
+                    segs.push(Segment {
+                        text: prefix.to_string(),
+                        fg: None,
+                        bg: None,
+                        style: TextStyle::default(),
+                    });
+                    segs.extend(segments_from_text(raw_line));
+                    let clipped = clip_segments(segs, max_width);
+                    push_line(clipped, &mut pages, &mut current, &mut at_page_index);
                 }
                 push_line(
                     StyledLine::from_plain(String::new()),
@@ -232,13 +289,11 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
                 if let Some(start_idx) = pending_chapter_start.take() {
                     chapter_starts.push(start_idx);
                 }
-                let heading = text.to_uppercase();
-                push_line(
-                    StyledLine::from_plain(heading),
-                    &mut pages,
-                    &mut current,
-                    &mut at_page_index,
-                );
+                let mut lines = wrap_styled_text(text, size.width as usize);
+                for line in &mut lines {
+                    uppercase_segments(&mut line.segments);
+                    push_line(line.clone(), &mut pages, &mut current, &mut at_page_index);
+                }
                 push_line(
                     StyledLine::from_plain(String::new()),
                     &mut pages,
@@ -252,20 +307,15 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
                 }
                 for item in items {
                     let line = format!("• {}", item);
-                    let lines = wrap_text(&line, size.width as usize);
+                    let lines = wrap_styled_text(&line, size.width as usize);
                     for i in 0..lines.len() {
-                        let is_last = i == lines.len() - 1;
+                        let is_last = i == lines.len().saturating_sub(1);
                         let out = if justify && !is_last {
-                            justify_line(&lines[i], size.width as usize)
+                            justify_styled_line(&lines[i], size.width as usize)
                         } else {
                             lines[i].clone()
                         };
-                        push_line(
-                            StyledLine::from_plain(out),
-                            &mut pages,
-                            &mut current,
-                            &mut at_page_index,
-                        );
+                        push_line(out, &mut pages, &mut current, &mut at_page_index);
                     }
                 }
                 push_line(
@@ -289,6 +339,7 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
                         text: prefix.to_string(),
                         fg: None,
                         bg: None,
+                        style: TextStyle::default(),
                     });
                     for span in line.spans {
                         segs.push(Segment {
@@ -303,6 +354,7 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
                                 g: c.g,
                                 b: c.b,
                             }),
+                            style: TextStyle::default(),
                         });
                     }
                     let clipped = clip_segments(segs, max_width.max(4));
@@ -326,175 +378,355 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
     }
 }
 
-use unicode_linebreak::{linebreaks, BreakOpportunity};
+fn wrap_styled_text(text: &str, width: usize) -> Vec<StyledLine> {
+    let width = width.max(1);
+    let spans = parse_inline_spans(text);
+    let tokens = tokenize_spans(spans);
+    wrap_tokens(tokens, width)
+}
 
-fn wrap_text(text: &str, width: usize) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut line = String::new();
-    let mut line_len = 0usize; // grapheme count
-    for token in text.split_whitespace() {
-        let token_len = token.graphemes(true).count();
-        if line.is_empty() {
-            // Try to place entire token
-            if token_len <= width {
-                line.push_str(token);
-                line_len = token_len;
-            } else {
-                // Soft-break long token using unicode_linebreak opportunities
-                let mut start = 0usize;
-                for (idx, opp) in linebreaks(token) {
-                    if matches!(opp, BreakOpportunity::Mandatory | BreakOpportunity::Allowed) {
-                        let part = &token[start..idx];
-                        let part_len = part.graphemes(true).count();
-                        if part_len > 0 {
-                            out.push(part.to_string());
-                        }
-                        start = idx;
-                    }
-                }
-                // Tail
-                if start < token.len() {
-                    out.push(token[start..].to_string());
-                }
-                line.clear();
-                line_len = 0;
+fn wrap_tokens(tokens: Vec<InlineToken>, width: usize) -> Vec<StyledLine> {
+    let mut lines: Vec<StyledLine> = Vec::new();
+    let mut current: Vec<Segment> = Vec::new();
+    let mut line_width = 0usize;
+    let mut pending_space: Option<TextStyle> = None;
+
+    let push_current =
+        |lines: &mut Vec<StyledLine>, current: &mut Vec<Segment>, line_width: &mut usize| {
+            lines.push(StyledLine {
+                segments: std::mem::take(current),
+            });
+            *line_width = 0;
+        };
+
+    for token in tokens {
+        match token {
+            InlineToken::Space(style) => {
+                pending_space = Some(style);
             }
-        } else if line_len + 1 + token_len <= width {
-            line.push(' ');
-            line.push_str(token);
-            line_len += 1 + token_len;
-        } else {
-            // Flush current line
-            out.push(line);
-            line = String::new();
-            line_len = 0;
-            // Place token (may still be too long)
-            if token_len <= width {
-                line.push_str(token);
-                line_len = token_len;
-            } else {
-                // Break within token
-                let mut start = 0usize;
-                let mut acc = String::new();
-                let mut acc_len = 0usize;
-                for (idx, opp) in linebreaks(token) {
-                    if matches!(opp, BreakOpportunity::Mandatory | BreakOpportunity::Allowed) {
-                        let part = &token[start..idx];
-                        let part_len = part.graphemes(true).count();
-                        if acc_len == 0 {
-                            if part_len <= width {
-                                acc.push_str(part);
-                                acc_len = part_len;
-                            } else {
-                                out.push(part.to_string());
-                            }
-                        } else if acc_len + 1 + part_len <= width {
-                            acc.push(' ');
-                            acc.push_str(part);
-                            acc_len += 1 + part_len;
-                        } else {
-                            out.push(acc);
-                            acc = part.to_string();
-                            acc_len = part_len;
-                        }
-                        start = idx;
-                    }
-                }
-                // Tail
-                let tail = &token[start..];
-                let tail_len = tail.graphemes(true).count();
-                if acc_len == 0 {
-                    if tail_len <= width {
-                        line = tail.to_string();
-                        line_len = tail_len;
-                    } else {
-                        out.push(tail.to_string());
-                    }
-                } else if acc_len + 1 + tail_len <= width {
-                    acc.push(' ');
-                    acc.push_str(tail);
-                    out.push(acc);
-                    line.clear();
-                    line_len = 0;
+            InlineToken::Newline => {
+                pending_space = None;
+                push_current(&mut lines, &mut current, &mut line_width);
+            }
+            InlineToken::Word(word) => {
+                let space_style = pending_space.take();
+                let space_width = if space_style.is_some() && !current.is_empty() {
+                    1
                 } else {
-                    out.push(acc);
-                    line = tail.to_string();
-                    line_len = tail_len;
+                    0
+                };
+                if line_width + space_width + word.width <= width {
+                    if let Some(style) = space_style {
+                        if !current.is_empty() {
+                            current.push(space_segment(style));
+                            line_width += 1;
+                        }
+                    }
+                    current.extend(word.segments);
+                    line_width += word.width;
+                } else {
+                    if !current.is_empty() {
+                        push_current(&mut lines, &mut current, &mut line_width);
+                    }
+                    if word.width > width {
+                        let parts = split_word_segments(&word.segments, width);
+                        let parts_len = parts.len();
+                        for (idx, part) in parts.into_iter().enumerate() {
+                            if idx + 1 == parts_len {
+                                current = part.segments;
+                                line_width = part.width;
+                            } else {
+                                lines.push(StyledLine {
+                                    segments: part.segments,
+                                });
+                            }
+                        }
+                    } else {
+                        current = word.segments;
+                        line_width = word.width;
+                    }
                 }
+                pending_space = None;
             }
         }
     }
-    if !line.is_empty() {
-        out.push(line);
+
+    if !current.is_empty() || lines.is_empty() {
+        lines.push(StyledLine { segments: current });
     }
-    out
+    lines
 }
 
-fn justify_line(line: &str, width: usize) -> String {
-    // Do not justify single-word or already full/overfull lines
-    if !line.contains(' ') || line.graphemes(true).count() >= width {
-        return line.to_string();
+fn parse_inline_spans(text: &str) -> Vec<InlineSpan> {
+    let mut spans: Vec<InlineSpan> = Vec::new();
+    let mut current = String::new();
+    let mut counts = StyleCounts::default();
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == STYLE_START || ch == STYLE_END {
+            let is_start = ch == STYLE_START;
+            let Some(code) = chars.next() else {
+                current.push(ch);
+                break;
+            };
+            if matches!(code, 'b' | 'i' | 'u' | 'c' | 'x' | 's') {
+                if !current.is_empty() {
+                    spans.push(InlineSpan {
+                        text: current,
+                        style: style_from_counts(&counts),
+                    });
+                    current = String::new();
+                }
+                apply_style_code(&mut counts, code, is_start);
+                continue;
+            }
+            current.push(ch);
+            current.push(code);
+            continue;
+        }
+        current.push(ch);
     }
-    let words: Vec<&str> = line.split(' ').collect();
-    let gaps = words.len().saturating_sub(1);
-    if gaps == 0 {
-        return line.to_string();
+    if !current.is_empty() {
+        spans.push(InlineSpan {
+            text: current,
+            style: style_from_counts(&counts),
+        });
     }
+    spans
+}
 
-    // Current grapheme length includes existing single spaces
-    let current_len = line.graphemes(true).count();
+fn style_from_counts(counts: &StyleCounts) -> TextStyle {
+    TextStyle {
+        bold: counts.bold > 0,
+        italic: counts.italic > 0,
+        underline: counts.underline > 0,
+        dim: counts.code > 0,
+        reverse: counts.code > 0,
+        strike: counts.strike > 0,
+        small_caps: counts.small_caps > 0,
+    }
+}
+
+fn apply_style_code(counts: &mut StyleCounts, code: char, is_start: bool) -> bool {
+    let target = match code {
+        'b' => &mut counts.bold,
+        'i' => &mut counts.italic,
+        'u' => &mut counts.underline,
+        'c' => &mut counts.code,
+        'x' => &mut counts.strike,
+        's' => &mut counts.small_caps,
+        _ => return false,
+    };
+    if is_start {
+        *target = target.saturating_add(1);
+    } else {
+        *target = target.saturating_sub(1);
+    }
+    true
+}
+
+fn tokenize_spans(spans: Vec<InlineSpan>) -> Vec<InlineToken> {
+    let mut tokens: Vec<InlineToken> = Vec::new();
+    let mut current_segments: Vec<Segment> = Vec::new();
+    let mut current_width = 0usize;
+
+    let flush_word = |tokens: &mut Vec<InlineToken>,
+                      current_segments: &mut Vec<Segment>,
+                      current_width: &mut usize| {
+        if !current_segments.is_empty() {
+            tokens.push(InlineToken::Word(InlineWord {
+                segments: std::mem::take(current_segments),
+                width: *current_width,
+            }));
+            *current_width = 0;
+        }
+    };
+
+    for span in spans {
+        let style = span.style;
+        for g in span.text.graphemes(true) {
+            if g == "\n" {
+                flush_word(&mut tokens, &mut current_segments, &mut current_width);
+                tokens.push(InlineToken::Newline);
+                continue;
+            }
+            if g.chars().all(|c| c.is_whitespace()) {
+                flush_word(&mut tokens, &mut current_segments, &mut current_width);
+                if !matches!(
+                    tokens.last(),
+                    Some(InlineToken::Space(_) | InlineToken::Newline)
+                ) {
+                    tokens.push(InlineToken::Space(style));
+                }
+                continue;
+            }
+            if let Some(last) = current_segments.last_mut() {
+                if last.style == style && last.fg.is_none() && last.bg.is_none() {
+                    last.text.push_str(g);
+                } else {
+                    current_segments.push(Segment {
+                        text: g.to_string(),
+                        fg: None,
+                        bg: None,
+                        style,
+                    });
+                }
+            } else {
+                current_segments.push(Segment {
+                    text: g.to_string(),
+                    fg: None,
+                    bg: None,
+                    style,
+                });
+            }
+            current_width += 1;
+        }
+    }
+    flush_word(&mut tokens, &mut current_segments, &mut current_width);
+    tokens
+}
+
+fn split_word_segments(segments: &[Segment], width: usize) -> Vec<InlineWord> {
+    let mut parts: Vec<InlineWord> = Vec::new();
+    let mut current: Vec<Segment> = Vec::new();
+    let mut used = 0usize;
+    for seg in segments {
+        for g in seg.text.graphemes(true) {
+            if used >= width && !current.is_empty() {
+                parts.push(InlineWord {
+                    segments: std::mem::take(&mut current),
+                    width: used,
+                });
+                used = 0;
+            }
+            if let Some(last) = current.last_mut() {
+                if last.style == seg.style && last.fg.is_none() && last.bg.is_none() {
+                    last.text.push_str(g);
+                } else {
+                    current.push(Segment {
+                        text: g.to_string(),
+                        fg: None,
+                        bg: None,
+                        style: seg.style,
+                    });
+                }
+            } else {
+                current.push(Segment {
+                    text: g.to_string(),
+                    fg: None,
+                    bg: None,
+                    style: seg.style,
+                });
+            }
+            used += 1;
+            if used == width {
+                parts.push(InlineWord {
+                    segments: std::mem::take(&mut current),
+                    width: used,
+                });
+                used = 0;
+            }
+        }
+    }
+    if !current.is_empty() {
+        parts.push(InlineWord {
+            segments: current,
+            width: used,
+        });
+    }
+    if parts.is_empty() {
+        parts.push(InlineWord {
+            segments: Vec::new(),
+            width: 0,
+        });
+    }
+    parts
+}
+
+fn segments_from_text(text: &str) -> Vec<Segment> {
+    parse_inline_spans(text)
+        .into_iter()
+        .map(|span| Segment {
+            text: span.text,
+            fg: None,
+            bg: None,
+            style: span.style,
+        })
+        .collect()
+}
+
+fn space_segment(style: TextStyle) -> Segment {
+    Segment {
+        text: " ".to_string(),
+        fg: None,
+        bg: None,
+        style,
+    }
+}
+
+fn justify_styled_line(line: &StyledLine, width: usize) -> StyledLine {
+    let current_len = line_width(line);
+    if current_len >= width {
+        return line.clone();
+    }
+    if current_len * 10 < width * 7 {
+        return line.clone();
+    }
+    let gaps: Vec<usize> = line
+        .segments
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, seg)| (is_space_segment(seg)).then_some(idx))
+        .collect();
+    if gaps.len() < 3 {
+        return line.clone();
+    }
     let extra = width.saturating_sub(current_len);
     if extra == 0 {
-        return line.to_string();
+        return line.clone();
     }
-
-    // Build with extra spaces distributed across gaps; no trailing spaces
-    let mut out = String::new();
-    let base = extra / gaps;
-    let mut remainder = extra % gaps;
-    for (i, w) in words.iter().enumerate() {
-        out.push_str(w);
-        if i < gaps {
-            // one existing space + extra padding
-            out.push(' ');
-            for _ in 0..base {
-                out.push(' ');
-            }
-            if remainder > 0 {
-                out.push(' ');
-                remainder -= 1;
-            }
+    let mut out = line.clone();
+    let base = extra / gaps.len();
+    let mut remainder = extra % gaps.len();
+    for idx in gaps {
+        let mut add = base;
+        if remainder > 0 {
+            add += 1;
+            remainder -= 1;
         }
-    }
-
-    // Clamp by grapheme count if overshoot
-    let count = out.graphemes(true).count();
-    if count > width {
-        // Truncate by grapheme count
-        let mut acc = String::new();
-        for (used, g) in out.graphemes(true).enumerate() {
-            if used >= width {
-                break;
-            }
-            acc.push_str(g);
+        if add > 0 {
+            out.segments[idx].text.push_str(&" ".repeat(add));
         }
-        return acc;
     }
     out
 }
 
-fn truncate_graphemes(s: &str, width: usize) -> String {
-    let mut out = String::new();
-    let mut count = 0usize;
-    for g in s.graphemes(true) {
-        if count >= width {
-            out.push('…');
-            break;
+fn line_width(line: &StyledLine) -> usize {
+    line.segments
+        .iter()
+        .map(|seg| seg.text.graphemes(true).count())
+        .sum()
+}
+
+fn is_space_segment(seg: &Segment) -> bool {
+    !seg.text.is_empty() && seg.text.chars().all(|c| c == ' ')
+}
+
+fn uppercase_segments(segments: &mut [Segment]) {
+    for seg in segments {
+        if seg.text.is_empty() {
+            continue;
         }
-        out.push_str(g);
-        count += 1;
+        let mut out = String::with_capacity(seg.text.len());
+        for ch in seg.text.chars() {
+            if ch.is_ascii() {
+                out.push(ch.to_ascii_uppercase());
+            } else {
+                out.push(ch);
+            }
+        }
+        seg.text = out;
     }
-    out
 }
 
 fn clip_segments(segments: Vec<Segment>, width: usize) -> StyledLine {
@@ -517,6 +749,7 @@ fn clip_segments(segments: Vec<Segment>, width: usize) -> StyledLine {
                 text: buf,
                 fg: seg.fg,
                 bg: seg.bg,
+                style: seg.style,
             });
         }
         if used >= width {
@@ -524,6 +757,7 @@ fn clip_segments(segments: Vec<Segment>, width: usize) -> StyledLine {
                 text: "…".into(),
                 fg: seg.fg,
                 bg: seg.bg,
+                style: seg.style,
             });
             break;
         }
@@ -538,6 +772,7 @@ impl StyledLine {
                 text,
                 fg: None,
                 bg: None,
+                style: TextStyle::default(),
             }],
         }
     }

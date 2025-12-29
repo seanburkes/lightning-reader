@@ -383,7 +383,11 @@ impl App {
             });
             if raw_ok {
                 let _ = disable_raw_mode();
-                execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+                execute!(
+                    terminal.backend_mut(),
+                    LeaveAlternateScreen,
+                    DisableMouseCapture
+                )?;
             } else {
                 execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
             }

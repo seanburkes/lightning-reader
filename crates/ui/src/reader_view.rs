@@ -32,6 +32,7 @@ impl Default for Theme {
 }
 use reader_core::layout::{Page, Segment, Size, StyledLine};
 use reader_core::types::Block as ReaderBlock;
+use std::borrow::Cow;
 
 const SPREAD_GAP: u16 = 4;
 
@@ -511,7 +512,7 @@ impl ReaderView {
         }
     }
 
-    fn page_lines(&self, idx: usize, highlight: Option<&str>) -> Vec<ratatui::text::Line<'_>> {
+    fn page_lines(&self, idx: usize, highlight: Option<&str>) -> Vec<ratatui::text::Line<'static>> {
         if let Some(page) = self.pages.get(idx) {
             page.lines
                 .iter()
@@ -528,11 +529,11 @@ impl ReaderView {
         }
     }
 
-    fn highlight_line<'a>(
-        line: &'a StyledLine,
+    fn highlight_line(
+        line: &StyledLine,
         highlight: Option<&str>,
         selection: Option<(usize, usize)>,
-    ) -> ratatui::text::Line<'a> {
+    ) -> ratatui::text::Line<'static> {
         if let Some((start, end)) = selection {
             return Self::selection_line(line, start, end);
         }
@@ -540,21 +541,22 @@ impl ReaderView {
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .unwrap_or("");
-        let mut spans: Vec<Span<'a>> = Vec::new();
+        let mut spans: Vec<Span<'static>> = Vec::new();
         for seg in &line.segments {
             let base_style = Self::segment_style(seg);
-            let segment_spans = Self::highlight_text(&seg.text, needle, base_style);
+            let seg_text = Self::segment_display_text(seg);
+            let segment_spans = Self::highlight_text(seg_text.as_ref(), needle, base_style);
             spans.extend(segment_spans);
         }
         ratatui::text::Line::from(spans)
     }
 
-    fn highlight_text<'a>(text: &'a str, needle: &str, base_style: Style) -> Vec<Span<'a>> {
+    fn highlight_text(text: &str, needle: &str, base_style: Style) -> Vec<Span<'static>> {
         if needle.is_empty() {
             return vec![Span::styled(text.to_string(), base_style)];
         }
         let needle_g: Vec<String> = needle.graphemes(true).map(|g| g.to_lowercase()).collect();
-        let mut spans: Vec<Span<'a>> = Vec::new();
+        let mut spans: Vec<Span<'static>> = Vec::new();
         let line_g: Vec<&str> = text.graphemes(true).collect();
         let mut start = 0;
         let mut i = 0;
@@ -594,7 +596,44 @@ impl ReaderView {
         if let Some(rgb) = &seg.bg {
             style = style.bg(Color::Rgb(rgb.r, rgb.g, rgb.b));
         }
+        if seg.style.bold {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        if seg.style.italic {
+            style = style.add_modifier(Modifier::ITALIC);
+        }
+        if seg.style.underline {
+            style = style.add_modifier(Modifier::UNDERLINED);
+        }
+        if seg.style.dim {
+            style = style.add_modifier(Modifier::DIM);
+        }
+        if seg.style.reverse {
+            style = style.add_modifier(Modifier::REVERSED);
+        }
+        if seg.style.strike {
+            style = style.add_modifier(Modifier::CROSSED_OUT);
+        }
         style
+    }
+
+    fn segment_display_text(seg: &Segment) -> Cow<'_, str> {
+        if !seg.style.small_caps {
+            return Cow::Borrowed(seg.text.as_str());
+        }
+        Cow::Owned(Self::small_caps_text(&seg.text))
+    }
+
+    fn small_caps_text(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        for ch in text.chars() {
+            if ch.is_ascii() {
+                out.push(ch.to_ascii_uppercase());
+            } else {
+                out.push(ch);
+            }
+        }
+        out
     }
 
     pub fn chapter_title(&self, idx: usize) -> String {
@@ -613,16 +652,17 @@ impl ReaderView {
         }
     }
 
-    fn selection_line<'a>(
-        line: &'a StyledLine,
+    fn selection_line(
+        line: &StyledLine,
         sel_start: usize,
         sel_end: usize,
-    ) -> ratatui::text::Line<'a> {
-        let mut spans: Vec<Span<'a>> = Vec::new();
+    ) -> ratatui::text::Line<'static> {
+        let mut spans: Vec<Span<'static>> = Vec::new();
         let mut offset = 0;
         for seg in &line.segments {
             let base_style = Self::segment_style(seg);
-            let seg_text = seg.text.as_str();
+            let seg_text = Self::segment_display_text(seg);
+            let seg_text = seg_text.as_ref();
             let seg_len = seg_text.graphemes(true).count();
             let seg_start = offset;
             let seg_end = offset + seg_len;
@@ -637,10 +677,7 @@ impl ReaderView {
                 }
                 if local_end > local_start {
                     let sel_style = base_style.bg(Color::DarkGray);
-                    spans.push(Span::styled(
-                        gs[local_start..local_end].concat(),
-                        sel_style,
-                    ));
+                    spans.push(Span::styled(gs[local_start..local_end].concat(), sel_style));
                 }
                 if local_end < seg_len {
                     spans.push(Span::styled(gs[local_end..].concat(), base_style));
@@ -699,6 +736,7 @@ fn sanitize_chapter_title(raw: &str) -> String {
         return String::new();
     }
     let stripped = strip_parenthetical_links(trimmed);
+    let stripped = strip_inline_markers(&stripped);
     if stripped.is_empty() {
         return String::new();
     }
@@ -809,9 +847,23 @@ fn strip_parenthetical_links(input: &str) -> String {
     cleaned.trim().to_string()
 }
 
+fn strip_inline_markers(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1E' || ch == '\x1F' {
+            let _ = chars.next();
+            continue;
+        }
+        out.push(ch);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reader_core::layout::TextStyle;
 
     fn page(lines: &[&str]) -> Page {
         Page {
@@ -822,6 +874,7 @@ mod tests {
                         text: (*s).to_string(),
                         fg: None,
                         bg: None,
+                        style: TextStyle::default(),
                     }],
                 })
                 .collect(),
@@ -878,6 +931,7 @@ mod tests {
                 text: "Hello World".into(),
                 fg: None,
                 bg: None,
+                style: TextStyle::default(),
             }],
         };
         let line = ReaderView::highlight_line(&styled, Some("world"), None);
@@ -894,6 +948,7 @@ mod tests {
                 text: "aba ba".into(),
                 fg: None,
                 bg: None,
+                style: TextStyle::default(),
             }],
         };
         let line = ReaderView::highlight_line(&styled, Some("ba"), None);
