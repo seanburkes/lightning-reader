@@ -116,9 +116,76 @@ fn main() {
         eprintln!("  [{}] {}", i, item.href);
     }
 
-    // Select first spine chapter with meaningful text
-    let mut blocks = Vec::new();
-    let mut selected_index: usize = 0;
+    let label_map = book.toc_labels().unwrap_or_default();
+    fn book_base(_book: &EpubBook) -> std::path::PathBuf {
+        // `toc_labels` uses OPF-parent normalization internally; we cannot access it here.
+        // Use empty base to produce relative keys that match when OPF is at root.
+        std::path::Path::new("").to_path_buf()
+    }
+    fn normalize_spine_href(base: &std::path::Path, href: &str) -> String {
+        base.join(href.split('#').next().unwrap_or(href))
+            .to_string_lossy()
+            .to_string()
+    }
+    fn is_placeholder_text(text: &str) -> bool {
+        let trimmed = text.trim();
+        trimmed == "───"
+            || trimmed == "[math]"
+            || trimmed == "[svg]"
+            || trimmed == "[image]"
+            || trimmed.starts_with("[image:")
+    }
+    fn has_content(blocks: &[reader_core::types::Block]) -> bool {
+        blocks.iter().any(|blk| match blk {
+            reader_core::types::Block::Paragraph(t)
+            | reader_core::types::Block::Heading(t, _)
+            | reader_core::types::Block::Quote(t) => {
+                let trimmed = t.trim();
+                !trimmed.is_empty() && !is_placeholder_text(trimmed)
+            }
+            reader_core::types::Block::List(items) => items.iter().any(|item| {
+                let trimmed = item.trim();
+                !trimmed.is_empty() && !is_placeholder_text(trimmed)
+            }),
+            reader_core::types::Block::Code { text, .. } => !text.trim().is_empty(),
+        })
+    }
+    fn heading_title(blocks: &[reader_core::types::Block]) -> Option<String> {
+        blocks.iter().find_map(|blk| match blk {
+            reader_core::types::Block::Heading(t, _) => {
+                let trimmed = t.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            }
+            _ => None,
+        })
+    }
+    fn fallback_title(href: &str) -> String {
+        let name = std::path::Path::new(href)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("chapter");
+        let mut s = name.replace(['_', '-', '.', '%'], " ");
+        s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let s = s
+            .trim()
+            .trim_start_matches(|c: char| c.is_ascii_digit())
+            .trim()
+            .to_string();
+        if s.is_empty() {
+            "Chapter".to_string()
+        } else {
+            s
+        }
+    }
+    let base = book_base(&book);
+
+    let mut blocks: Vec<reader_core::types::Block> = Vec::new();
+    let mut chapter_titles: Vec<String> = Vec::new();
+    let mut selected_index: Option<usize> = None;
     // Common non-content hints to skip
     let skip_hints = [
         "cover",
@@ -139,7 +206,12 @@ fn main() {
             .as_deref()
             .map(|mt| mt.contains("xhtml") || mt.contains("html"))
             .unwrap_or(true);
-        if !mt_is_xhtml || skip_hints.iter().any(|h| href.contains(h)) {
+        if !mt_is_xhtml || href.contains("nav") || href.contains("toc") {
+            continue;
+        }
+        let key = normalize_spine_href(&base, &item.href);
+        let label = label_map.get(&key).cloned();
+        if label.is_none() && skip_hints.iter().any(|h| href.contains(h)) {
             continue;
         }
         let html = match book.load_chapter(item) {
@@ -148,117 +220,45 @@ fn main() {
         };
         let mut b = reader_core::normalize::html_to_blocks(&html);
         b = reader_core::normalize::postprocess_blocks(b);
-        // Check for meaningful prose: at least one paragraph/heading with length
-        let has_meaningful = b.iter().any(|blk| match blk {
-            reader_core::types::Block::Paragraph(t) | reader_core::types::Block::Heading(t, _) => {
-                t.trim().len() >= 32
-            }
-            _ => false,
-        });
-        if has_meaningful {
-            blocks = b;
-            selected_index = idx;
-            break;
+        if !has_content(&b) {
+            continue;
+        }
+        let title = label
+            .or_else(|| heading_title(&b))
+            .unwrap_or_else(|| fallback_title(&item.href));
+        if !blocks.is_empty() {
+            blocks.push(reader_core::types::Block::Paragraph(String::new()));
+            blocks.push(reader_core::types::Block::Paragraph("───".into()));
+            blocks.push(reader_core::types::Block::Paragraph(String::new()));
+        }
+        blocks.append(&mut b);
+        chapter_titles.push(title);
+        if selected_index.is_none() {
+            selected_index = Some(idx);
         }
     }
     if blocks.is_empty() {
-        // Fallback to first spine item that loads
-        if let Some((idx, item)) = book.spine().iter().enumerate().next() {
-            let html = book.load_chapter(item).unwrap_or_default();
-            blocks = reader_core::normalize::html_to_blocks(&html);
-            blocks = reader_core::normalize::postprocess_blocks(blocks);
-            selected_index = idx;
-        }
-    }
-
-    // Concatenate subsequent chapters to build a continuous flow
-    // Titles for TOC
-    let mut chapter_titles: Vec<String> = Vec::new();
-    // Build href->label map from official nav if available
-    let label_map = book.toc_labels().unwrap_or_default();
-    fn book_base(_book: &EpubBook) -> std::path::PathBuf {
-        // `toc_labels` uses OPF-parent normalization internally; we cannot access it here.
-        // Use empty base to produce relative keys that match when OPF is at root.
-        std::path::Path::new("").to_path_buf()
-    }
-    fn normalize_spine_href(base: &std::path::Path, href: &str) -> String {
-        base.join(href.split('#').next().unwrap_or(href))
-            .to_string_lossy()
-            .to_string()
-    }
-    if !blocks.is_empty() {
-        let mut all_blocks = blocks.clone();
-        // Title for the initially selected chapter: prefer official label if available
-        let initial_title = {
-            let base = book_base(&book);
-            let selected_key = normalize_spine_href(&base, &book.spine()[selected_index].href);
-            label_map
-                .get(&selected_key)
-                .cloned()
-                .or_else(|| {
-                    blocks.iter().find_map(|blk| match blk {
-                        reader_core::types::Block::Heading(t, _) => Some(t.clone()),
-                        _ => None,
-                    })
-                })
-                .unwrap_or_else(|| format!("Chapter {}", chapter_titles.len() + 1))
-        };
-        chapter_titles.push(initial_title);
-        for item in book.spine().iter().skip(selected_index + 1) {
-            let href = item.href.to_lowercase();
-            let mt_is_xhtml = item
-                .media_type
+        if let Some((idx, item)) = book.spine().iter().enumerate().find(|(_, item)| {
+            item.media_type
                 .as_deref()
                 .map(|mt| mt.contains("xhtml") || mt.contains("html"))
-                .unwrap_or(true);
-            if !mt_is_xhtml || href.contains("nav") || href.contains("toc") {
-                continue;
-            }
-            if let Ok(html) = book.load_chapter(item) {
-                let mut b = reader_core::normalize::html_to_blocks(&html);
-                b = reader_core::normalize::postprocess_blocks(b);
-                if !b.is_empty() {
-                    // Prefer official label; fallback to first heading or href-derived
-                    let base = book_base(&book);
-                    let key = normalize_spine_href(&base, &item.href);
-                    let title = label_map
-                        .get(&key)
-                        .cloned()
-                        .or_else(|| {
-                            b.iter().find_map(|blk| match blk {
-                                reader_core::types::Block::Heading(t, _) => Some(t.clone()),
-                                _ => None,
-                            })
-                        })
-                        .unwrap_or_else(|| {
-                            let name = std::path::Path::new(&item.href)
-                                .file_stem()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("chapter");
-                            let mut s = name.replace(['_', '-', '.', '%'], " ");
-                            s = s.split_whitespace().collect::<Vec<_>>().join(" ");
-                            let s = s
-                                .trim()
-                                .trim_start_matches(|c: char| c.is_ascii_digit())
-                                .trim()
-                                .to_string();
-                            if s.is_empty() {
-                                "Chapter".to_string()
-                            } else {
-                                s
-                            }
-                        });
-                    chapter_titles.push(title);
-                    // Insert a visible separator between chapters
-                    all_blocks.push(reader_core::types::Block::Paragraph(String::new()));
-                    all_blocks.push(reader_core::types::Block::Paragraph("───".into()));
-                    all_blocks.push(reader_core::types::Block::Paragraph(String::new()));
-                    all_blocks.append(&mut b);
-                }
-            }
+                .unwrap_or(true)
+        }) {
+            let html = book.load_chapter(item).unwrap_or_default();
+            let mut b = reader_core::normalize::html_to_blocks(&html);
+            b = reader_core::normalize::postprocess_blocks(b);
+            blocks = b;
+            let key = normalize_spine_href(&base, &item.href);
+            let title = label_map
+                .get(&key)
+                .cloned()
+                .or_else(|| heading_title(&blocks))
+                .unwrap_or_else(|| fallback_title(&item.href));
+            chapter_titles.push(title);
+            selected_index = Some(idx);
         }
-        blocks = all_blocks;
     }
+    let selected_index = selected_index.unwrap_or(0);
 
     let document = Document::new(document_info, blocks, chapter_titles);
     run_reader(document, book_id, selected_index);
