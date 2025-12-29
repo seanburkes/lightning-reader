@@ -16,7 +16,7 @@ pub fn html_to_blocks(html: &str) -> Vec<Block> {
         let el = node.as_element()?;
         let tag = el.name.local.to_lowercase();
         if let Some(level) = heading_level(&tag) {
-            let text = node.text_contents().trim().to_string();
+            let text = inline_text(node);
             return if text.is_empty() {
                 None
             } else {
@@ -25,7 +25,7 @@ pub fn html_to_blocks(html: &str) -> Vec<Block> {
         }
         match tag.as_str() {
             "p" => {
-                let text = node.text_contents().trim().to_string();
+                let text = inline_text(node);
                 if text.is_empty() {
                     None
                 } else {
@@ -33,7 +33,7 @@ pub fn html_to_blocks(html: &str) -> Vec<Block> {
                 }
             }
             "blockquote" => {
-                let text = node.text_contents().trim().to_string();
+                let text = inline_text(node);
                 if text.is_empty() {
                     None
                 } else {
@@ -45,7 +45,7 @@ pub fn html_to_blocks(html: &str) -> Vec<Block> {
                 for li in node.children() {
                     if let Some(li_el) = li.as_element() {
                         if li_el.name.local.as_ref() == "li" {
-                            let text = li.text_contents().trim().to_string();
+                            let text = inline_text(&li);
                             if !text.is_empty() {
                                 items.push(text);
                             }
@@ -71,7 +71,21 @@ pub fn html_to_blocks(html: &str) -> Vec<Block> {
                     .unwrap_or_else(|| node.text_contents());
                 Some(Block::Code { lang, text })
             }
-            "img" => Some(Block::Paragraph("[image]".into())),
+            "img" => Some(Block::Paragraph(image_placeholder(node))),
+            "figure" => figure_block(node),
+            "table" => table_block(node),
+            "dl" => definition_list_block(node),
+            "aside" => {
+                let text = inline_text(node);
+                if text.is_empty() {
+                    None
+                } else {
+                    Some(Block::Quote(text))
+                }
+            }
+            "hr" => Some(Block::Paragraph("───".into())),
+            "math" => Some(Block::Paragraph("[math]".into())),
+            "svg" => Some(Block::Paragraph("[svg]".into())),
             _ => None,
         }
     }
@@ -97,6 +111,252 @@ pub fn html_to_blocks(html: &str) -> Vec<Block> {
     }
 
     blocks
+}
+
+fn inline_text(node: &NodeRef) -> String {
+    let mut out = String::new();
+    append_inline_text(node, &mut out);
+    normalize_inline_text(&out)
+}
+
+fn append_inline_text(node: &NodeRef, out: &mut String) {
+    if let Some(text) = node.as_text() {
+        out.push_str(&text.borrow());
+        return;
+    }
+    let Some(el) = node.as_element() else {
+        for child in node.children() {
+            append_inline_text(&child, out);
+        }
+        return;
+    };
+    let tag = el.name.local.to_lowercase();
+    match tag.as_str() {
+        "br" => out.push_str(" / "),
+        "a" => {
+            let label = collect_inline_children(node);
+            let href = el.attributes.borrow().get("href").map(|s| s.to_string());
+            if label.is_empty() {
+                if let Some(href) = href {
+                    out.push_str(&href);
+                }
+                return;
+            }
+            out.push_str(&label);
+            if let Some(href) = href {
+                if !href.is_empty() && !label.contains(&href) {
+                    out.push_str(" (");
+                    out.push_str(&href);
+                    out.push(')');
+                }
+            }
+        }
+        "img" => out.push_str(&image_placeholder(node)),
+        "em" | "i" => append_wrapped_marker(node, out, "*"),
+        "strong" | "b" => append_wrapped_marker(node, out, "**"),
+        "code" | "kbd" | "samp" => append_wrapped_marker(node, out, "`"),
+        "del" | "s" | "strike" => append_wrapped_marker(node, out, "~~"),
+        "sup" => append_wrapped_pair(node, out, "^{", "}"),
+        "sub" => append_wrapped_pair(node, out, "_{", "}"),
+        "abbr" => {
+            let label = collect_inline_children(node);
+            if label.is_empty() {
+                return;
+            }
+            out.push_str(&label);
+            if let Some(title) = el.attributes.borrow().get("title") {
+                let title = normalize_inline_text(title);
+                if !title.is_empty() && !label.contains(&title) {
+                    out.push_str(" (");
+                    out.push_str(&title);
+                    out.push(')');
+                }
+            }
+        }
+        "math" => {
+            let label = collect_inline_children(node);
+            if label.is_empty() {
+                out.push_str("[math]");
+            } else {
+                out.push_str(&label);
+            }
+        }
+        "svg" => {
+            let label = collect_inline_children(node);
+            if label.is_empty() {
+                out.push_str("[svg]");
+            } else {
+                out.push_str(&label);
+            }
+        }
+        _ => {
+            for child in node.children() {
+                append_inline_text(&child, out);
+            }
+        }
+    }
+}
+
+fn collect_inline_children(node: &NodeRef) -> String {
+    let mut out = String::new();
+    for child in node.children() {
+        append_inline_text(&child, &mut out);
+    }
+    normalize_inline_text(&out)
+}
+
+fn append_wrapped_marker(node: &NodeRef, out: &mut String, marker: &str) {
+    let label = collect_inline_children(node);
+    if label.is_empty() {
+        return;
+    }
+    out.push_str(marker);
+    out.push_str(&label);
+    out.push_str(marker);
+}
+
+fn append_wrapped_pair(node: &NodeRef, out: &mut String, prefix: &str, suffix: &str) {
+    let label = collect_inline_children(node);
+    if label.is_empty() {
+        return;
+    }
+    out.push_str(prefix);
+    out.push_str(&label);
+    out.push_str(suffix);
+}
+
+fn normalize_inline_text(s: &str) -> String {
+    let s = s
+        .replace('\u{00A0}', " ")
+        .replace('\n', " ")
+        .replace('\r', " ")
+        .replace(
+            ['\u{200B}', '\u{200C}', '\u{200D}', '\u{200E}', '\u{200F}'],
+            "",
+        )
+        .replace(['\u{2028}', '\u{2029}'], " ")
+        .replace('\u{FEFF}', "");
+    let mut out = String::with_capacity(s.len());
+    let mut last_space = false;
+    for ch in s.chars() {
+        if ch.is_whitespace() {
+            if !last_space {
+                out.push(' ');
+            }
+            last_space = true;
+        } else {
+            out.push(ch);
+            last_space = false;
+        }
+    }
+    out.trim().to_string()
+}
+
+fn image_placeholder(node: &NodeRef) -> String {
+    let Some(el) = node.as_element() else {
+        return "[image]".to_string();
+    };
+    let attrs = el.attributes.borrow();
+    let alt = attrs.get("alt").or_else(|| attrs.get("title"));
+    if let Some(alt) = alt {
+        let alt = normalize_inline_text(alt);
+        if !alt.is_empty() {
+            return format!("[image: {}]", alt);
+        }
+    }
+    "[image]".to_string()
+}
+
+fn figure_block(node: &NodeRef) -> Option<Block> {
+    let mut parts: Vec<String> = Vec::new();
+    if let Ok(mut imgs) = node.select("img") {
+        if let Some(img) = imgs.next() {
+            let text = image_placeholder(img.as_node());
+            if !text.is_empty() {
+                parts.push(text);
+            }
+        }
+    }
+    if let Ok(mut captions) = node.select("figcaption") {
+        if let Some(cap) = captions.next() {
+            let text = inline_text(cap.as_node());
+            if !text.is_empty() {
+                parts.push(text);
+            }
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(Block::Paragraph(parts.join(" ")))
+    }
+}
+
+fn table_block(node: &NodeRef) -> Option<Block> {
+    let mut rows: Vec<String> = Vec::new();
+    if let Ok(trs) = node.select("tr") {
+        for tr in trs {
+            let mut cells: Vec<String> = Vec::new();
+            for child in tr.as_node().children() {
+                if let Some(el) = child.as_element() {
+                    let tag = el.name.local.to_lowercase();
+                    if tag == "td" || tag == "th" {
+                        let cell = inline_text(&child);
+                        cells.push(cell);
+                    }
+                }
+            }
+            if !cells.is_empty() {
+                rows.push(cells.join(" | "));
+            }
+        }
+    }
+    if rows.is_empty() {
+        let fallback = inline_text(node);
+        if fallback.is_empty() {
+            None
+        } else {
+            Some(Block::Code {
+                lang: None,
+                text: fallback,
+            })
+        }
+    } else {
+        Some(Block::Code {
+            lang: None,
+            text: rows.join("\n"),
+        })
+    }
+}
+
+fn definition_list_block(node: &NodeRef) -> Option<Block> {
+    let mut items: Vec<String> = Vec::new();
+    let mut current_term: Option<String> = None;
+    for child in node.children() {
+        if let Some(el) = child.as_element() {
+            let tag = el.name.local.to_lowercase();
+            if tag == "dt" {
+                let term = inline_text(&child);
+                if !term.is_empty() {
+                    current_term = Some(term);
+                }
+            } else if tag == "dd" {
+                let definition = inline_text(&child);
+                if !definition.is_empty() {
+                    let item = match current_term.take() {
+                        Some(term) if !term.is_empty() => format!("{}: {}", term, definition),
+                        _ => definition,
+                    };
+                    items.push(item);
+                }
+            }
+        }
+    }
+    if items.is_empty() {
+        None
+    } else {
+        Some(Block::List(items))
+    }
 }
 
 // Lightweight post-processing to smooth whitespace/newlines inside paragraphs/headings
@@ -217,6 +477,35 @@ mod tests {
         assert!(matches!(blocks[1], Block::Paragraph(ref t) if t == "Intro text."));
         assert!(matches!(blocks[2], Block::List(ref items) if items == &["One", "Two"]));
         assert!(matches!(blocks[3], Block::Paragraph(ref t) if t == "Tail."));
+    }
+
+    #[test]
+    fn preserves_inline_markup_and_links() {
+        let html = r#"
+        <p>Read <em>this</em> and <strong>that</strong>, see
+        <a href="https://example.com">link</a>.</p>
+        "#;
+        let blocks = html_to_blocks(html);
+        assert!(matches!(
+            blocks[0],
+            Block::Paragraph(ref t)
+                if t == "Read *this* and **that**, see link (https://example.com)."
+        ));
+    }
+
+    #[test]
+    fn extracts_tables_as_code_blocks() {
+        let html = r#"
+        <table>
+          <tr><th>Head</th><th>Value</th></tr>
+          <tr><td>A</td><td>B</td></tr>
+        </table>
+        "#;
+        let blocks = html_to_blocks(html);
+        assert!(matches!(
+            blocks[0],
+            Block::Code { ref text, .. } if text == "Head | Value\nA | B"
+        ));
     }
 
     #[test]
