@@ -71,7 +71,7 @@ pub fn html_to_blocks(html: &str) -> Vec<Block> {
                     .unwrap_or_else(|| node.text_contents());
                 Some(Block::Code { lang, text })
             }
-            "img" => Some(Block::Paragraph(image_placeholder(node))),
+            "img" => Some(Block::Paragraph(image_block_text(node))),
             "figure" => figure_block(node),
             "table" => table_block(node),
             "dl" => definition_list_block(node),
@@ -155,7 +155,7 @@ fn append_inline_text(node: &NodeRef, out: &mut String) {
                 }
             }
         }
-        "img" => out.push_str(&image_placeholder(node)),
+        "img" => out.push_str(&image_inline_text(node)),
         "em" | "i" => append_wrapped_style(node, out, 'i'),
         "strong" | "b" => append_wrapped_style(node, out, 'b'),
         "code" | "kbd" | "samp" => append_wrapped_style(node, out, 'c'),
@@ -261,7 +261,7 @@ fn append_inline_text_without_lists(node: &NodeRef, out: &mut String) {
                 }
             }
         }
-        "img" => out.push_str(&image_placeholder(node)),
+        "img" => out.push_str(&image_inline_text(node)),
         "em" | "i" => append_wrapped_style(node, out, 'i'),
         "strong" | "b" => append_wrapped_style(node, out, 'b'),
         "code" | "kbd" | "samp" => append_wrapped_style(node, out, 'c'),
@@ -507,43 +507,101 @@ fn dehyphenate(input: &str) -> String {
     out.join(" ")
 }
 
-fn image_placeholder(node: &NodeRef) -> String {
+fn image_inline_text(node: &NodeRef) -> String {
     let Some(el) = node.as_element() else {
-        return "[image]".to_string();
+        return "Image".to_string();
     };
     let attrs = el.attributes.borrow();
-    let alt = attrs.get("alt").or_else(|| attrs.get("title"));
-    if let Some(alt) = alt {
-        let alt = normalize_inline_text(alt);
-        if !alt.is_empty() {
-            return format!("[image: {}]", alt);
-        }
+    if let Some(label) = image_label_text(&attrs) {
+        return label;
     }
-    "[image]".to_string()
+    if let Some(dim) = image_dimensions_text(&attrs) {
+        return format!("Image ({})", dim);
+    }
+    "Image".to_string()
+}
+
+fn image_block_text(node: &NodeRef) -> String {
+    let Some(el) = node.as_element() else {
+        return "Image".to_string();
+    };
+    let attrs = el.attributes.borrow();
+    if let Some(label) = image_label_text(&attrs) {
+        return format!("Image: {}", label);
+    }
+    if let Some(dim) = image_dimensions_text(&attrs) {
+        return format!("Image ({})", dim);
+    }
+    "Image".to_string()
 }
 
 fn figure_block(node: &NodeRef) -> Option<Block> {
-    let mut parts: Vec<String> = Vec::new();
+    let mut img_label: Option<String> = None;
+    let mut img_dims: Option<String> = None;
     if let Ok(mut imgs) = node.select("img") {
         if let Some(img) = imgs.next() {
-            let text = image_placeholder(img.as_node());
-            if !text.is_empty() {
-                parts.push(text);
+            if let Some(el) = img.as_node().as_element() {
+                let attrs = el.attributes.borrow();
+                img_label = image_label_text(&attrs);
+                img_dims = image_dimensions_text(&attrs);
             }
         }
     }
-    if let Ok(mut captions) = node.select("figcaption") {
-        if let Some(cap) = captions.next() {
-            let text = inline_text(cap.as_node());
-            if !text.is_empty() {
-                parts.push(text);
+    let caption = if let Ok(mut captions) = node.select("figcaption") {
+        captions
+            .next()
+            .map(|cap| inline_text(cap.as_node()))
+            .filter(|text| !text.is_empty())
+    } else {
+        None
+    };
+    let text = if let Some(mut caption) = caption {
+        if let Some(label) = img_label {
+            if !caption.contains(&label) {
+                caption = format!("{} ({})", caption, label);
             }
         }
-    }
-    if parts.is_empty() {
+        caption
+    } else if let Some(label) = img_label {
+        format!("Image: {}", label)
+    } else if let Some(dim) = img_dims {
+        format!("Image ({})", dim)
+    } else {
+        "Image".to_string()
+    };
+    if text.trim().is_empty() {
         None
     } else {
-        Some(Block::Paragraph(parts.join(" ")))
+        Some(Block::Paragraph(text))
+    }
+}
+
+fn image_label_text(attrs: &kuchiki::Attributes) -> Option<String> {
+    let label = attrs
+        .get("alt")
+        .or_else(|| attrs.get("title"))
+        .or_else(|| attrs.get("aria-label"));
+    label
+        .map(normalize_inline_text)
+        .filter(|label| !label.is_empty())
+}
+
+fn image_dimensions_text(attrs: &kuchiki::Attributes) -> Option<String> {
+    let width = parse_dimension(attrs.get("width"));
+    let height = parse_dimension(attrs.get("height"));
+    match (width, height) {
+        (Some(w), Some(h)) => Some(format!("{}x{}", w, h)),
+        _ => None,
+    }
+}
+
+fn parse_dimension(value: Option<&str>) -> Option<u32> {
+    let value = value?;
+    let digits: String = value.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        None
+    } else {
+        digits.parse::<u32>().ok()
     }
 }
 
