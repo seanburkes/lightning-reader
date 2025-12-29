@@ -204,6 +204,7 @@ impl App {
         let mut added = false;
         if let Some(rx) = &self.incoming_pages {
             while let Ok(msg) = rx.try_recv() {
+                view.add_images_from_blocks(&msg.blocks);
                 if !self.blocks.is_empty() {
                     self.blocks.push(ReaderBlock::Paragraph(String::new()));
                     self.blocks.push(ReaderBlock::Paragraph("───".into()));
@@ -349,6 +350,7 @@ impl App {
         view.book_title = self.book_title.clone();
         view.author = self.author.clone();
         view.theme = self.theme.clone();
+        view.add_images_from_blocks(&self.blocks);
         let mut selection_anchor: Option<SelectionPoint> = None;
         let mut selection_active = false;
         let mut last_frame = Rect::default();
@@ -381,6 +383,10 @@ impl App {
                 view.reflow(&self.blocks, inner);
                 view.render(f, size, width, self.last_search.as_deref());
             });
+            #[cfg(feature = "kitty-images")]
+            {
+                let _ = view.render_images(terminal.backend_mut());
+            }
             if raw_ok {
                 let _ = disable_raw_mode();
                 execute!(
@@ -396,6 +402,7 @@ impl App {
 
         let mut exit = false;
         while !exit {
+            let mut drew_view = false;
             terminal.draw(|f| {
                 let size = f.size();
                 last_frame = size;
@@ -416,12 +423,14 @@ impl App {
                 match self.mode {
                     Mode::Reader => {
                         view.render(f, size, width, self.last_search.as_deref());
+                        drew_view = true;
                     }
                     Mode::Toc => {
                         if let Some(t) = &self.toc {
                             t.render(f, size, width);
                         } else {
                             view.render(f, size, width, self.last_search.as_deref());
+                            drew_view = true;
                         }
                     }
                     Mode::Spritz => {
@@ -474,6 +483,12 @@ impl App {
                     f.render_widget(help, popup_area);
                 }
             })?;
+            #[cfg(feature = "kitty-images")]
+            {
+                if drew_view {
+                    view.render_images(terminal.backend_mut())?;
+                }
+            }
 
             match event::poll(Duration::from_millis(100)) {
                 Ok(true) => {

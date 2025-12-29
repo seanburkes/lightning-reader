@@ -16,6 +16,7 @@ pub struct Page {
 #[derive(Clone)]
 pub struct StyledLine {
     pub segments: Vec<Segment>,
+    pub image: Option<ImagePlacement>,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -38,6 +39,13 @@ pub struct Segment {
     pub fg: Option<crate::types::RgbColor>,
     pub bg: Option<crate::types::RgbColor>,
     pub style: TextStyle,
+}
+
+#[derive(Clone)]
+pub struct ImagePlacement {
+    pub id: String,
+    pub cols: u16,
+    pub rows: u16,
 }
 
 #[derive(Clone)]
@@ -130,6 +138,19 @@ pub fn extract_words(blocks: &[Block]) -> Vec<WordToken> {
                 for word in cleaned.split_whitespace() {
                     let token = WordToken::from_word(word.to_string(), current_chapter);
                     words.push(token);
+                }
+            }
+            Block::Image(image) => {
+                let label = image
+                    .caption
+                    .as_ref()
+                    .or(image.alt.as_ref())
+                    .map(|s| strip_style_markers(s));
+                if let Some(label) = label {
+                    for word in label.split_whitespace() {
+                        let token = WordToken::from_word(word.to_string(), current_chapter);
+                        words.push(token);
+                    }
                 }
             }
         }
@@ -367,6 +388,44 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
                     &mut at_page_index,
                 );
             }
+            Block::Image(image) => {
+                if let Some(start_idx) = pending_chapter_start.take() {
+                    chapter_starts.push(start_idx);
+                }
+                let mut caption = image.caption.clone().or_else(|| image.alt.clone());
+                if caption.is_none() && image.data.is_none() {
+                    caption = Some("Image".to_string());
+                }
+                if image.data.is_some() {
+                    let cols = size.width.max(1);
+                    let max_rows = size.height.saturating_sub(2).max(3);
+                    let rows = image_rows_from_dims(image.width, image.height, cols, max_rows);
+                    let blank = " ".repeat(cols as usize);
+                    for row in 0..rows {
+                        let mut line = StyledLine::from_plain(blank.clone());
+                        if row == 0 {
+                            line.image = Some(ImagePlacement {
+                                id: image.id.clone(),
+                                cols,
+                                rows,
+                            });
+                        }
+                        push_line(line, &mut pages, &mut current, &mut at_page_index);
+                    }
+                }
+                if let Some(caption) = caption {
+                    let lines = wrap_styled_text(&caption, size.width as usize);
+                    for line in lines {
+                        push_line(line, &mut pages, &mut current, &mut at_page_index);
+                    }
+                }
+                push_line(
+                    StyledLine::from_plain(String::new()),
+                    &mut pages,
+                    &mut current,
+                    &mut at_page_index,
+                );
+            }
         }
     }
     if !current.lines.is_empty() {
@@ -385,6 +444,18 @@ fn wrap_styled_text(text: &str, width: usize) -> Vec<StyledLine> {
     wrap_tokens(tokens, width)
 }
 
+fn image_rows_from_dims(width: Option<u32>, height: Option<u32>, cols: u16, max_rows: u16) -> u16 {
+    let cols = cols.max(1) as f32;
+    let mut rows = if let (Some(w), Some(h)) = (width, height) {
+        let ratio = h as f32 / w.max(1) as f32;
+        (ratio * cols).ceil() as u16
+    } else {
+        6
+    };
+    rows = rows.max(3);
+    rows.min(max_rows.max(3))
+}
+
 fn wrap_tokens(tokens: Vec<InlineToken>, width: usize) -> Vec<StyledLine> {
     let mut lines: Vec<StyledLine> = Vec::new();
     let mut current: Vec<Segment> = Vec::new();
@@ -395,6 +466,7 @@ fn wrap_tokens(tokens: Vec<InlineToken>, width: usize) -> Vec<StyledLine> {
         |lines: &mut Vec<StyledLine>, current: &mut Vec<Segment>, line_width: &mut usize| {
             lines.push(StyledLine {
                 segments: std::mem::take(current),
+                image: None,
             });
             *line_width = 0;
         };
@@ -438,6 +510,7 @@ fn wrap_tokens(tokens: Vec<InlineToken>, width: usize) -> Vec<StyledLine> {
                             } else {
                                 lines.push(StyledLine {
                                     segments: part.segments,
+                                    image: None,
                                 });
                             }
                         }
@@ -452,7 +525,10 @@ fn wrap_tokens(tokens: Vec<InlineToken>, width: usize) -> Vec<StyledLine> {
     }
 
     if !current.is_empty() || lines.is_empty() {
-        lines.push(StyledLine { segments: current });
+        lines.push(StyledLine {
+            segments: current,
+            image: None,
+        });
     }
     lines
 }
@@ -762,7 +838,10 @@ fn clip_segments(segments: Vec<Segment>, width: usize) -> StyledLine {
             break;
         }
     }
-    StyledLine { segments: out }
+    StyledLine {
+        segments: out,
+        image: None,
+    }
 }
 
 impl StyledLine {
@@ -774,6 +853,7 @@ impl StyledLine {
                 bg: None,
                 style: TextStyle::default(),
             }],
+            image: None,
         }
     }
 }

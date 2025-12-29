@@ -310,6 +310,14 @@ impl EpubBook {
             .insert(chapter_path, s.clone());
         Ok(s)
     }
+
+    pub fn load_resource(&self, path: &Path) -> Result<Vec<u8>, ReaderError> {
+        let mut zip = self.zip.borrow_mut();
+        let mut file = zip.by_name(path.to_string_lossy().as_ref())?;
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf)?;
+        Ok(buf)
+    }
 }
 
 fn properties_has_nav(properties: &str) -> bool {

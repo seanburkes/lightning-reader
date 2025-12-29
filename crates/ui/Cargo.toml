@@ -11,3 +11,8 @@ unicode-segmentation = "1.11"
 dirs = "6.0"
 chrono = { version = "0.4", default-features = false }
 arboard = "3.4"
+base64 = { version = "0.22", optional = true }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"], optional = true }
+
+[features]
+kitty-images = ["dep:base64", "dep:image"]

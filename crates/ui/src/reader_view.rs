@@ -30,9 +30,34 @@ impl Default for Theme {
         }
     }
 }
+
+#[cfg(feature = "kitty-images")]
+struct KittyImage {
+    png_base64: String,
+}
+
+#[cfg(feature = "kitty-images")]
+#[derive(Clone)]
+struct RenderImage {
+    id: String,
+    x: u16,
+    y: u16,
+    cols: u16,
+    rows: u16,
+}
+#[cfg(feature = "kitty-images")]
+use base64::Engine;
+#[cfg(feature = "kitty-images")]
+use crossterm::{cursor::MoveTo, queue};
+#[cfg(feature = "kitty-images")]
+use image::ImageFormat;
 use reader_core::layout::{Page, Segment, Size, StyledLine};
 use reader_core::types::Block as ReaderBlock;
 use std::borrow::Cow;
+use std::collections::HashMap;
+use std::sync::Arc;
+#[cfg(feature = "kitty-images")]
+use std::{env, io::Write};
 
 const SPREAD_GAP: u16 = 4;
 
@@ -50,6 +75,11 @@ pub struct ReaderView {
     pub total_pages: Option<usize>,
     pub toc_overrides: Vec<reader_core::pdf::OutlineEntry>,
     pub selection: Option<SelectionRange>,
+    pub image_map: HashMap<String, Arc<Vec<u8>>>,
+    #[cfg(feature = "kitty-images")]
+    image_cache: HashMap<String, KittyImage>,
+    #[cfg(feature = "kitty-images")]
+    image_placements: Vec<RenderImage>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -105,6 +135,11 @@ impl ReaderView {
             total_pages: None,
             toc_overrides: Vec::new(),
             selection: None,
+            image_map: HashMap::new(),
+            #[cfg(feature = "kitty-images")]
+            image_cache: HashMap::new(),
+            #[cfg(feature = "kitty-images")]
+            image_placements: Vec::new(),
         }
     }
 
@@ -166,6 +201,21 @@ impl ReaderView {
         }
     }
 
+    pub fn add_images_from_blocks(&mut self, blocks: &[ReaderBlock]) {
+        for block in blocks {
+            let ReaderBlock::Image(image) = block else {
+                continue;
+            };
+            let Some(data) = &image.data else {
+                continue;
+            };
+            if !self.image_map.contains_key(&image.id) {
+                self.image_map
+                    .insert(image.id.clone(), Arc::new(data.clone()));
+            }
+        }
+    }
+
     pub fn inner_size(area: Rect, column_width: u16, two_pane: bool) -> Size {
         let vchunks = Layout::default()
             .direction(Direction::Vertical)
@@ -194,12 +244,16 @@ impl ReaderView {
     }
 
     pub fn render(
-        &self,
+        &mut self,
         f: &mut Frame<'_>,
         area: Rect,
         column_width: u16,
         highlight: Option<&str>,
     ) {
+        #[cfg(feature = "kitty-images")]
+        {
+            self.image_placements.clear();
+        }
         let vchunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(1)])
@@ -353,12 +407,21 @@ impl ReaderView {
             let base = self.current.saturating_sub(self.current % 2);
             let left_lines = self.page_lines(base, highlight);
             let right_lines = self.page_lines(base + 1, highlight);
+            #[cfg(feature = "kitty-images")]
+            {
+                self.collect_image_placements(base, spreads[0]);
+                self.collect_image_placements(base + 1, spreads[2]);
+            }
             let left_p = Paragraph::new(left_lines).wrap(Wrap { trim: false });
             let right_p = Paragraph::new(right_lines).wrap(Wrap { trim: false });
             f.render_widget(left_p, spreads[0]);
             f.render_widget(right_p, spreads[2]);
         } else {
             let lines = self.page_lines(self.current, highlight);
+            #[cfg(feature = "kitty-images")]
+            {
+                self.collect_image_placements(self.current, para_area);
+            }
             let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
             f.render_widget(paragraph, para_area);
         }
@@ -529,6 +592,51 @@ impl ReaderView {
         }
     }
 
+    #[cfg(feature = "kitty-images")]
+    fn collect_image_placements(&mut self, page_idx: usize, area: Rect) {
+        let Some(page) = self.pages.get(page_idx) else {
+            return;
+        };
+        for (line_idx, line) in page.lines.iter().enumerate() {
+            let Some(image) = &line.image else {
+                continue;
+            };
+            let y = area.y.saturating_add(line_idx as u16);
+            if y >= area.y.saturating_add(area.height) {
+                break;
+            }
+            let cols = image.cols.min(area.width.max(1));
+            self.image_placements.push(RenderImage {
+                id: image.id.clone(),
+                x: area.x,
+                y,
+                cols,
+                rows: image.rows,
+            });
+        }
+    }
+
+    #[cfg(feature = "kitty-images")]
+    pub fn render_images<W: Write>(&mut self, out: &mut W) -> std::io::Result<()> {
+        if self.image_placements.is_empty() || !kitty_supported() {
+            return Ok(());
+        }
+        write!(out, "\x1b_Ga=d\x1b\\")?;
+        let placements = self.image_placements.clone();
+        for placement in placements {
+            let data = self.image_map.get(&placement.id).cloned();
+            let Some(data) = data else {
+                continue;
+            };
+            let Some(encoded) = self.ensure_png_base64(&placement.id, data.as_slice()) else {
+                continue;
+            };
+            queue!(out, MoveTo(placement.x, placement.y))?;
+            send_kitty_image(out, &encoded, placement.cols.max(1), placement.rows.max(1))?;
+        }
+        out.flush()
+    }
+
     fn highlight_line(
         line: &StyledLine,
         highlight: Option<&str>,
@@ -615,6 +723,22 @@ impl ReaderView {
             style = style.add_modifier(Modifier::CROSSED_OUT);
         }
         style
+    }
+
+    #[cfg(feature = "kitty-images")]
+    fn ensure_png_base64(&mut self, id: &str, data: &[u8]) -> Option<String> {
+        if let Some(cached) = self.image_cache.get(id) {
+            return Some(cached.png_base64.clone());
+        }
+        let png = encode_png(data)?;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(png);
+        self.image_cache.insert(
+            id.to_string(),
+            KittyImage {
+                png_base64: encoded.clone(),
+            },
+        );
+        Some(encoded)
     }
 
     fn segment_display_text(seg: &Segment) -> Cow<'_, str> {
@@ -860,6 +984,56 @@ fn strip_inline_markers(input: &str) -> String {
     out
 }
 
+#[cfg(feature = "kitty-images")]
+fn kitty_supported() -> bool {
+    if env::var("KITTY_WINDOW_ID").is_ok() {
+        return true;
+    }
+    env::var("TERM")
+        .map(|term| term.contains("kitty"))
+        .unwrap_or(false)
+}
+
+#[cfg(feature = "kitty-images")]
+fn encode_png(data: &[u8]) -> Option<Vec<u8>> {
+    let image = image::load_from_memory(data).ok()?;
+    let mut out = Vec::new();
+    image
+        .write_to(&mut std::io::Cursor::new(&mut out), ImageFormat::Png)
+        .ok()?;
+    Some(out)
+}
+
+#[cfg(feature = "kitty-images")]
+fn send_kitty_image<W: Write>(
+    out: &mut W,
+    base64: &str,
+    cols: u16,
+    rows: u16,
+) -> std::io::Result<()> {
+    let chunk_size = 4096usize;
+    let bytes = base64.as_bytes();
+    let total = (bytes.len() + chunk_size - 1) / chunk_size;
+    for idx in 0..total {
+        let start = idx * chunk_size;
+        let end = (start + chunk_size).min(bytes.len());
+        let chunk = std::str::from_utf8(&bytes[start..end]).unwrap_or("");
+        let last = idx + 1 == total;
+        let mut params = String::new();
+        if idx == 0 {
+            params.push_str(&format!("a=T,f=100,C=1,c={},r={},q=2", cols, rows));
+        }
+        if !last {
+            if !params.is_empty() {
+                params.push(',');
+            }
+            params.push_str("m=1");
+        }
+        write!(out, "\x1b_G{};{}\x1b\\", params, chunk)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -876,6 +1050,7 @@ mod tests {
                         bg: None,
                         style: TextStyle::default(),
                     }],
+                    image: None,
                 })
                 .collect(),
         }
@@ -933,6 +1108,7 @@ mod tests {
                 bg: None,
                 style: TextStyle::default(),
             }],
+            image: None,
         };
         let line = ReaderView::highlight_line(&styled, Some("world"), None);
         assert_eq!(line.spans.len(), 2);
@@ -950,6 +1126,7 @@ mod tests {
                 bg: None,
                 style: TextStyle::default(),
             }],
+            image: None,
         };
         let line = ReaderView::highlight_line(&styled, Some("ba"), None);
         assert_eq!(line.spans.len(), 4); // "a" + "ba" + " " + "ba"

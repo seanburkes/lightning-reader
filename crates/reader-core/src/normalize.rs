@@ -1,7 +1,14 @@
-use crate::types::Block;
+use crate::types::{Block, ImageBlock};
 use kuchiki::{traits::*, NodeRef};
 
 pub fn html_to_blocks(html: &str) -> Vec<Block> {
+    html_to_blocks_with_images(html, |_| None)
+}
+
+pub fn html_to_blocks_with_images<F>(html: &str, mut resolve: F) -> Vec<Block>
+where
+    F: FnMut(&str) -> Option<(String, Vec<u8>)>,
+{
     let parser = kuchiki::parse_html().one(html.to_string());
     let mut blocks = Vec::new();
 
@@ -12,7 +19,10 @@ pub fn html_to_blocks(html: &str) -> Vec<Block> {
             .map(|lvl| lvl.min(6))
     }
 
-    fn extract_block(node: &NodeRef) -> Option<Block> {
+    fn extract_block<F>(node: &NodeRef, resolve: &mut F) -> Option<Block>
+    where
+        F: FnMut(&str) -> Option<(String, Vec<u8>)>,
+    {
         let el = node.as_element()?;
         let tag = el.name.local.to_lowercase();
         if let Some(level) = heading_level(&tag) {
@@ -71,8 +81,8 @@ pub fn html_to_blocks(html: &str) -> Vec<Block> {
                     .unwrap_or_else(|| node.text_contents());
                 Some(Block::Code { lang, text })
             }
-            "img" => Some(Block::Paragraph(image_block_text(node))),
-            "figure" => figure_block(node),
+            "img" => image_block(node, resolve),
+            "figure" => figure_block(node, resolve),
             "table" => table_block(node),
             "dl" => definition_list_block(node),
             "aside" => {
@@ -90,17 +100,20 @@ pub fn html_to_blocks(html: &str) -> Vec<Block> {
         }
     }
 
-    fn collect(node: &NodeRef, out: &mut Vec<Block>) {
+    fn collect<F>(node: &NodeRef, out: &mut Vec<Block>, resolve: &mut F)
+    where
+        F: FnMut(&str) -> Option<(String, Vec<u8>)>,
+    {
         for child in node.children() {
-            if let Some(block) = extract_block(&child) {
+            if let Some(block) = extract_block(&child, resolve) {
                 out.push(block);
                 continue;
             }
-            collect(&child, out);
+            collect(&child, out, resolve);
         }
     }
 
-    collect(&parser, &mut blocks);
+    collect(&parser, &mut blocks, &mut resolve);
 
     if blocks.is_empty() {
         // Fallback: whole document text as a paragraph
@@ -521,29 +534,52 @@ fn image_inline_text(node: &NodeRef) -> String {
     "Image".to_string()
 }
 
-fn image_block_text(node: &NodeRef) -> String {
+fn image_block<F>(node: &NodeRef, resolve: &mut F) -> Option<Block>
+where
+    F: FnMut(&str) -> Option<(String, Vec<u8>)>,
+{
     let Some(el) = node.as_element() else {
-        return "Image".to_string();
+        return None;
     };
     let attrs = el.attributes.borrow();
-    if let Some(label) = image_label_text(&attrs) {
-        return format!("Image: {}", label);
-    }
-    if let Some(dim) = image_dimensions_text(&attrs) {
-        return format!("Image ({})", dim);
-    }
-    "Image".to_string()
+    let src = image_src(&attrs);
+    let alt = image_label_text(&attrs);
+    let (width, height) = image_dimensions(&attrs);
+    let Some(src) = src else {
+        let text = image_fallback_text(alt.as_deref(), width, height);
+        return (!text.is_empty()).then(|| Block::Paragraph(text));
+    };
+    let (id, data) = match resolve(&src) {
+        Some((id, data)) => (id, Some(data)),
+        None => (src.clone(), None),
+    };
+    Some(Block::Image(ImageBlock {
+        id,
+        data,
+        alt,
+        caption: None,
+        width,
+        height,
+    }))
 }
 
-fn figure_block(node: &NodeRef) -> Option<Block> {
-    let mut img_label: Option<String> = None;
-    let mut img_dims: Option<String> = None;
+fn figure_block<F>(node: &NodeRef, resolve: &mut F) -> Option<Block>
+where
+    F: FnMut(&str) -> Option<(String, Vec<u8>)>,
+{
+    let mut src: Option<String> = None;
+    let mut alt: Option<String> = None;
+    let mut width: Option<u32> = None;
+    let mut height: Option<u32> = None;
     if let Ok(mut imgs) = node.select("img") {
         if let Some(img) = imgs.next() {
             if let Some(el) = img.as_node().as_element() {
                 let attrs = el.attributes.borrow();
-                img_label = image_label_text(&attrs);
-                img_dims = image_dimensions_text(&attrs);
+                src = image_src(&attrs);
+                alt = image_label_text(&attrs);
+                let dims = image_dimensions(&attrs);
+                width = dims.0;
+                height = dims.1;
             }
         }
     }
@@ -555,25 +591,24 @@ fn figure_block(node: &NodeRef) -> Option<Block> {
     } else {
         None
     };
-    let text = if let Some(mut caption) = caption {
-        if let Some(label) = img_label {
-            if !caption.contains(&label) {
-                caption = format!("{} ({})", caption, label);
-            }
-        }
-        caption
-    } else if let Some(label) = img_label {
-        format!("Image: {}", label)
-    } else if let Some(dim) = img_dims {
-        format!("Image ({})", dim)
-    } else {
-        "Image".to_string()
+    let Some(src) = src else {
+        let text = caption
+            .or_else(|| alt.clone())
+            .unwrap_or_else(|| image_fallback_text(None, width, height));
+        return (!text.trim().is_empty()).then(|| Block::Paragraph(text));
     };
-    if text.trim().is_empty() {
-        None
-    } else {
-        Some(Block::Paragraph(text))
-    }
+    let (id, data) = match resolve(&src) {
+        Some((id, data)) => (id, Some(data)),
+        None => (src.clone(), None),
+    };
+    Some(Block::Image(ImageBlock {
+        id,
+        data,
+        alt,
+        caption,
+        width,
+        height,
+    }))
 }
 
 fn image_label_text(attrs: &kuchiki::Attributes) -> Option<String> {
@@ -592,6 +627,45 @@ fn image_dimensions_text(attrs: &kuchiki::Attributes) -> Option<String> {
     match (width, height) {
         (Some(w), Some(h)) => Some(format!("{}x{}", w, h)),
         _ => None,
+    }
+}
+
+fn image_dimensions(attrs: &kuchiki::Attributes) -> (Option<u32>, Option<u32>) {
+    (
+        parse_dimension(attrs.get("width")),
+        parse_dimension(attrs.get("height")),
+    )
+}
+
+fn image_src(attrs: &kuchiki::Attributes) -> Option<String> {
+    let raw = attrs
+        .get("src")
+        .or_else(|| attrs.get("data-src"))
+        .or_else(|| attrs.get("data-original"))?;
+    let mut s = raw.trim().to_string();
+    if let Some(pos) = s.find('#') {
+        s.truncate(pos);
+    }
+    if let Some(pos) = s.find('?') {
+        s.truncate(pos);
+    }
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
+fn image_fallback_text(alt: Option<&str>, width: Option<u32>, height: Option<u32>) -> String {
+    if let Some(alt) = alt {
+        let alt = alt.trim();
+        if !alt.is_empty() {
+            return format!("Image: {}", alt);
+        }
+    }
+    match (width, height) {
+        (Some(w), Some(h)) => format!("Image ({}x{})", w, h),
+        _ => "Image".to_string(),
     }
 }
 
@@ -703,6 +777,14 @@ pub fn postprocess_blocks(mut blocks: Vec<Block>) -> Vec<Block> {
             }
             Block::Quote(ref mut t) => {
                 *t = clean_text(t, true);
+            }
+            Block::Image(ref mut img) => {
+                if let Some(caption) = img.caption.as_mut() {
+                    *caption = clean_text(caption, false);
+                }
+                if let Some(alt) = img.alt.as_mut() {
+                    *alt = clean_text(alt, false);
+                }
             }
             _ => {}
         }

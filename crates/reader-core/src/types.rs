@@ -64,6 +64,17 @@ pub enum Block {
     List(Vec<String>),
     Code { lang: Option<String>, text: String },
     Quote(String),
+    Image(ImageBlock),
+}
+
+#[derive(Clone)]
+pub struct ImageBlock {
+    pub id: String,
+    pub data: Option<Vec<u8>>,
+    pub alt: Option<String>,
+    pub caption: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
 }
 
 #[derive(Clone, Copy)]
