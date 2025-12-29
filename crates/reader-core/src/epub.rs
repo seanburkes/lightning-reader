@@ -31,6 +31,8 @@ pub struct EpubBook {
     pub title: Option<String>,
     pub author: Option<String>,
     pub spine: Vec<SpineItem>,
+    nav_href: Option<String>,
+    ncx_href: Option<String>,
     rootfile: PathBuf,
     zip: RefCell<ZipArchive<File>>,
     chapter_cache: RefCell<HashMap<String, String>>,
@@ -67,12 +69,18 @@ fn read_container(zip: &mut ZipArchive<File>) -> Result<PathBuf, ReaderError> {
     Ok(PathBuf::from(root))
 }
 
-type ManifestEntry = (String, String, Option<String>);
+struct ManifestItem {
+    id: String,
+    href: String,
+    media_type: Option<String>,
+    properties: Option<String>,
+}
 
 type OpfResult = (
     Option<String>,
-    Vec<ManifestEntry>,
+    Vec<ManifestItem>,
     Vec<String>,
+    Option<String>,
     Option<String>,
 );
 
@@ -81,10 +89,11 @@ fn read_opf(zip: &mut ZipArchive<File>, opf_path: &Path) -> Result<OpfResult, Re
     let mut opf_xml = String::new();
     opf.read_to_string(&mut opf_xml)?;
     let mut reader = XmlReader::from_str(&opf_xml);
-    let mut manifest: Vec<(String, String, Option<String>)> = Vec::new();
+    let mut manifest: Vec<ManifestItem> = Vec::new();
     let mut spine_ids: Vec<String> = Vec::new();
     let mut title: Option<String> = None;
     let mut author: Option<String> = None;
+    let mut spine_toc: Option<String> = None;
     loop {
         match reader.read_event() {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
@@ -93,6 +102,7 @@ fn read_opf(zip: &mut ZipArchive<File>, opf_path: &Path) -> Result<OpfResult, Re
                     let mut id = String::new();
                     let mut href = String::new();
                     let mut media: Option<String> = None;
+                    let mut properties: Option<String> = None;
                     for a in e.attributes().flatten() {
                         let key = String::from_utf8_lossy(a.key.as_ref());
                         let val = a
@@ -108,9 +118,17 @@ fn read_opf(zip: &mut ZipArchive<File>, opf_path: &Path) -> Result<OpfResult, Re
                         if key.ends_with("media-type") {
                             media = Some(sval);
                         }
+                        if key.ends_with("properties") {
+                            properties = Some(sval);
+                        }
                     }
                     if !id.is_empty() && !href.is_empty() {
-                        manifest.push((id, href, media));
+                        manifest.push(ManifestItem {
+                            id,
+                            href,
+                            media_type: media,
+                            properties,
+                        });
                     }
                 } else if name.ends_with("itemref") {
                     for a in e.attributes().flatten() {
@@ -121,6 +139,16 @@ fn read_opf(zip: &mut ZipArchive<File>, opf_path: &Path) -> Result<OpfResult, Re
                         let sval = val.into_owned();
                         if key.ends_with("idref") {
                             spine_ids.push(sval);
+                        }
+                    }
+                } else if name.ends_with("spine") && spine_toc.is_none() {
+                    for a in e.attributes().flatten() {
+                        let key = String::from_utf8_lossy(a.key.as_ref());
+                        if key.ends_with("toc") {
+                            let val = a
+                                .unescape_value()
+                                .map_err(|e| ReaderError::Parse(e.to_string()))?;
+                            spine_toc = Some(val.into_owned());
                         }
                     }
                 } else if name.ends_with("title") {
@@ -140,7 +168,7 @@ fn read_opf(zip: &mut ZipArchive<File>, opf_path: &Path) -> Result<OpfResult, Re
             _ => {}
         }
     }
-    Ok((title, manifest, spine_ids, author))
+    Ok((title, manifest, spine_ids, author, spine_toc))
 }
 
 impl EpubBook {
@@ -148,17 +176,45 @@ impl EpubBook {
         let file = std::fs::File::open(path)?;
         let mut zip = ZipArchive::new(file)?;
         let rootfile = read_container(&mut zip)?;
-        let (title, manifest, spine_ids, author) = read_opf(&mut zip, &rootfile)?;
+        let (title, manifest, spine_ids, author, spine_toc) = read_opf(&mut zip, &rootfile)?;
+        let nav_href = manifest
+            .iter()
+            .find(|item| {
+                item.properties
+                    .as_deref()
+                    .map(properties_has_nav)
+                    .unwrap_or(false)
+            })
+            .map(|item| item.href.clone());
+        let ncx_href = spine_toc
+            .as_deref()
+            .and_then(|toc_id| {
+                manifest
+                    .iter()
+                    .find(|item| item.id == toc_id)
+                    .map(|item| item.href.clone())
+            })
+            .or_else(|| {
+                manifest
+                    .iter()
+                    .find(|item| {
+                        item.media_type
+                            .as_deref()
+                            .map(is_ncx_media_type)
+                            .unwrap_or(false)
+                    })
+                    .map(|item| item.href.clone())
+            });
         let spine = spine_ids
             .into_iter()
             .filter_map(|idref| {
                 manifest
                     .iter()
-                    .find(|(id, _, _)| *id == idref)
-                    .map(|(_, href, media)| SpineItem {
+                    .find(|item| item.id == idref)
+                    .map(|item| SpineItem {
                         id: idref.clone(),
-                        href: href.clone(),
-                        media_type: media.clone(),
+                        href: item.href.clone(),
+                        media_type: item.media_type.clone(),
                     })
             })
             .collect();
@@ -169,6 +225,8 @@ impl EpubBook {
             rootfile,
             zip: RefCell::new(zip),
             chapter_cache: RefCell::new(HashMap::new()),
+            nav_href,
+            ncx_href,
         })
     }
 
@@ -178,7 +236,12 @@ impl EpubBook {
 
     pub fn toc_labels(&self) -> Result<std::collections::HashMap<String, String>, ReaderError> {
         // Read directly from the shared archive to avoid reopening
-        crate::nav::read_nav_labels_from_archive(&self.zip, &self.rootfile)
+        crate::nav::read_nav_labels_from_archive_with_hints(
+            &self.zip,
+            &self.rootfile,
+            self.nav_href.as_deref(),
+            self.ncx_href.as_deref(),
+        )
     }
 
     pub fn load_chapter(&self, item: &SpineItem) -> Result<String, ReaderError> {
@@ -197,4 +260,14 @@ impl EpubBook {
             .insert(chapter_path, s.clone());
         Ok(s)
     }
+}
+
+fn properties_has_nav(properties: &str) -> bool {
+    properties
+        .split_whitespace()
+        .any(|prop| prop.eq_ignore_ascii_case("nav"))
+}
+
+fn is_ncx_media_type(media_type: &str) -> bool {
+    media_type.eq_ignore_ascii_case("application/x-dtbncx+xml")
 }

@@ -107,24 +107,55 @@ pub fn read_nav_labels(
     zip_path: &Path,
     opf_path: &Path,
 ) -> Result<HashMap<String, String>, ReaderError> {
+    read_nav_labels_with_hints(zip_path, opf_path, None, None)
+}
+
+pub fn read_nav_labels_with_hints(
+    zip_path: &Path,
+    opf_path: &Path,
+    nav_href: Option<&str>,
+    ncx_href: Option<&str>,
+) -> Result<HashMap<String, String>, ReaderError> {
     let file = File::open(zip_path)?;
     let mut zip = ZipArchive::new(file)?;
-    read_nav_labels_from_archive_inner(&mut zip, opf_path)
+    read_nav_labels_from_archive_inner(&mut zip, opf_path, nav_href, ncx_href)
 }
 
 pub fn read_nav_labels_from_archive(
     zip: &RefCell<ZipArchive<File>>,
     opf_path: &Path,
 ) -> Result<HashMap<String, String>, ReaderError> {
+    read_nav_labels_from_archive_with_hints(zip, opf_path, None, None)
+}
+
+pub fn read_nav_labels_from_archive_with_hints(
+    zip: &RefCell<ZipArchive<File>>,
+    opf_path: &Path,
+    nav_href: Option<&str>,
+    ncx_href: Option<&str>,
+) -> Result<HashMap<String, String>, ReaderError> {
     let mut borrow = zip.borrow_mut();
-    read_nav_labels_from_archive_inner(&mut borrow, opf_path)
+    read_nav_labels_from_archive_inner(&mut borrow, opf_path, nav_href, ncx_href)
 }
 
 fn read_nav_labels_from_archive_inner(
     zip: &mut ZipArchive<File>,
     opf_path: &Path,
+    nav_href: Option<&str>,
+    ncx_href: Option<&str>,
 ) -> Result<HashMap<String, String>, ReaderError> {
     let base = opf_path.parent().unwrap_or(Path::new(""));
+
+    if let Some(href) = nav_href {
+        let candidate = base.join(strip_fragment(href));
+        if zip.by_name(candidate.to_string_lossy().as_ref()).is_ok() {
+            let s = read_file_to_string(zip, &candidate)?;
+            let labels = parse_epub3_nav(&s, base);
+            if !labels.is_empty() {
+                return Ok(labels);
+            }
+        }
+    }
 
     // Try EPUB3: nav.xhtml or toc.xhtml in OPF directory
     for name in ["nav.xhtml", "toc.xhtml"] {
@@ -132,6 +163,17 @@ fn read_nav_labels_from_archive_inner(
         if zip.by_name(candidate.to_string_lossy().as_ref()).is_ok() {
             let s = read_file_to_string(zip, &candidate)?;
             let labels = parse_epub3_nav(&s, base);
+            if !labels.is_empty() {
+                return Ok(labels);
+            }
+        }
+    }
+
+    if let Some(href) = ncx_href {
+        let candidate = base.join(strip_fragment(href));
+        if zip.by_name(candidate.to_string_lossy().as_ref()).is_ok() {
+            let s = read_file_to_string(zip, &candidate)?;
+            let labels = parse_epub2_ncx(&s, base);
             if !labels.is_empty() {
                 return Ok(labels);
             }
@@ -149,4 +191,8 @@ fn read_nav_labels_from_archive_inner(
     }
 
     Ok(HashMap::new())
+}
+
+fn strip_fragment(href: &str) -> &str {
+    href.split('#').next().unwrap_or(href)
 }
