@@ -68,6 +68,27 @@ fn main() {
         }
     }
 
+    if matches!(format, DocumentFormat::Text | DocumentFormat::Markdown) {
+        let path = Path::new(&input_path);
+        match reader_core::text::TextFile::open(path) {
+            Ok(text_doc) => {
+                let document = text_doc.to_document();
+                let book_id = BookId {
+                    id: format!("path:{}", path.display()),
+                    path: path.display().to_string(),
+                    title: document.info.title.clone(),
+                    format,
+                };
+                run_reader(document, book_id, 0);
+                return;
+            }
+            Err(e) => {
+                eprintln!("Failed to open text file: {}", e);
+                return;
+            }
+        }
+    }
+
     // Open EPUB and compute BookId (placeholder id = path sha256-like)
     let path = std::path::Path::new(&input_path);
     let book = match EpubBook::open(path) {
@@ -80,38 +101,11 @@ fn main() {
             }
         },
     };
-    
-
-    // Handle text files (TXT/MD)
-        },
-    };
-    
-    // Handle text files (TXT/MD)
-    if matches!(format, DocumentFormat::Text) | matches!(format, DocumentFormat::Markdown) {
-        match reader_core::text::TextFile::open(&path) {
-            Ok(text_doc) => {
-                let document = text_doc.to_document();
-                let book_id = BookId {
-                    id: format!("path:{}", input_path),
-                    path: input_path.clone(),
-                    title: document.info.title.clone(),
-                    author: None,
-                    format,
-                };
-                
-                run_reader(
-                    &document,
-                    &book_id,
-                    0,  // Start at page 0
-                );
-            }
-            Err(e) => {
-                eprintln!("Failed to open text file: {}", e);
-                return;
-            }
-        }
-    }
-    
+    let book_id = BookId {
+        id: format!("path:{}", path.display()),
+        path: path.display().to_string(),
+        title: book.title.clone(),
+        format,
     };
     let document_info = DocumentInfo::from_book_id(&book_id, book.author.clone());
 
