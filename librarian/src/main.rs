@@ -148,6 +148,19 @@ fn main() {
                 !trimmed.is_empty() && !is_placeholder_text(trimmed)
             }),
             reader_core::types::Block::Code { text, .. } => !text.trim().is_empty(),
+            reader_core::types::Block::Image(image) => {
+                image.data.as_ref().map(|d| !d.is_empty()).unwrap_or(false)
+                    || image
+                        .caption
+                        .as_ref()
+                        .map(|t| !t.trim().is_empty())
+                        .unwrap_or(false)
+                    || image
+                        .alt
+                        .as_ref()
+                        .map(|t| !t.trim().is_empty())
+                        .unwrap_or(false)
+            }
         })
     }
     fn heading_title(blocks: &[reader_core::types::Block]) -> Option<String> {
@@ -218,7 +231,21 @@ fn main() {
             Ok(s) => s,
             Err(_) => continue,
         };
-        let mut b = reader_core::normalize::html_to_blocks(&html);
+        let chapter_path = base.join(&item.href);
+        let chapter_dir = chapter_path.parent().unwrap_or(&base).to_path_buf();
+        let base_root = base.clone();
+        let mut b = reader_core::normalize::html_to_blocks_with_images(&html, |src| {
+            if src.starts_with("http://") || src.starts_with("https://") {
+                return None;
+            }
+            let resolved = if src.starts_with('/') {
+                base_root.join(src.trim_start_matches('/'))
+            } else {
+                chapter_dir.join(src)
+            };
+            let data = book.load_resource(&resolved).ok()?;
+            Some((resolved.to_string_lossy().to_string(), data))
+        });
         b = reader_core::normalize::postprocess_blocks(b);
         if !has_content(&b) {
             continue;
@@ -245,7 +272,21 @@ fn main() {
                 .unwrap_or(true)
         }) {
             let html = book.load_chapter(item).unwrap_or_default();
-            let mut b = reader_core::normalize::html_to_blocks(&html);
+            let chapter_path = base.join(&item.href);
+            let chapter_dir = chapter_path.parent().unwrap_or(&base).to_path_buf();
+            let base_root = base.clone();
+            let mut b = reader_core::normalize::html_to_blocks_with_images(&html, |src| {
+                if src.starts_with("http://") || src.starts_with("https://") {
+                    return None;
+                }
+                let resolved = if src.starts_with('/') {
+                    base_root.join(src.trim_start_matches('/'))
+                } else {
+                    chapter_dir.join(src)
+                };
+                let data = book.load_resource(&resolved).ok()?;
+                Some((resolved.to_string_lossy().to_string(), data))
+            });
             b = reader_core::normalize::postprocess_blocks(b);
             blocks = b;
             let key = normalize_spine_href(&base, &item.href);

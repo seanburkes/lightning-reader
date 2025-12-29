@@ -9,3 +9,6 @@ ui = { path = "../crates/ui" }
 toml = "0.9"
 directories = "6.0"
 ratatui = "0.26"
+
+[features]
+kitty-images = ["ui/kitty-images"]
