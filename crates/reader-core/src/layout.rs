@@ -155,6 +155,17 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
     let mut current = Page { lines: Vec::new() };
     let mut chapter_starts: Vec<usize> = Vec::new();
     let mut at_page_index: usize = pages.len();
+    let mut push_line = |line: StyledLine,
+                         pages: &mut Vec<Page>,
+                         current: &mut Page,
+                         at_page_index: &mut usize| {
+        current.lines.push(line);
+        if current.lines.len() as u16 >= size.height {
+            pages.push(current.clone());
+            *current = Page { lines: Vec::new() };
+            *at_page_index += 1;
+        }
+    };
     let mut pending_chapter_start: Option<usize> = Some(0); // initial chapter starts at page 0
     for (idx, block) in blocks.iter().enumerate() {
         match block {
@@ -175,15 +186,20 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
                     } else {
                         lines[i].clone()
                     };
-                    current.lines.push(StyledLine::from_plain(line));
-                    if current.lines.len() as u16 >= size.height {
-                        pages.push(current.clone());
-                        current = Page { lines: Vec::new() };
-                        at_page_index += 1;
-                    }
+                    push_line(
+                        StyledLine::from_plain(line),
+                        &mut pages,
+                        &mut current,
+                        &mut at_page_index,
+                    );
                 }
                 // blank line between paragraphs
-                current.lines.push(StyledLine::from_plain(String::new()));
+                push_line(
+                    StyledLine::from_plain(String::new()),
+                    &mut pages,
+                    &mut current,
+                    &mut at_page_index,
+                );
             }
             Block::Quote(text) => {
                 if let Some(start_idx) = pending_chapter_start.take() {
@@ -198,22 +214,37 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
                 for raw_line in text.lines() {
                     let clipped = truncate_graphemes(raw_line, eff_width.max(4));
                     let prefixed = format!("{}{}", prefix, clipped);
-                    current.lines.push(StyledLine::from_plain(prefixed));
-                    if current.lines.len() as u16 >= size.height {
-                        pages.push(current.clone());
-                        current = Page { lines: Vec::new() };
-                        at_page_index += 1;
-                    }
+                    push_line(
+                        StyledLine::from_plain(prefixed),
+                        &mut pages,
+                        &mut current,
+                        &mut at_page_index,
+                    );
                 }
-                current.lines.push(StyledLine::from_plain(String::new()));
+                push_line(
+                    StyledLine::from_plain(String::new()),
+                    &mut pages,
+                    &mut current,
+                    &mut at_page_index,
+                );
             }
             Block::Heading(text, _) => {
                 if let Some(start_idx) = pending_chapter_start.take() {
                     chapter_starts.push(start_idx);
                 }
                 let heading = text.to_uppercase();
-                current.lines.push(StyledLine::from_plain(heading));
-                current.lines.push(StyledLine::from_plain(String::new()));
+                push_line(
+                    StyledLine::from_plain(heading),
+                    &mut pages,
+                    &mut current,
+                    &mut at_page_index,
+                );
+                push_line(
+                    StyledLine::from_plain(String::new()),
+                    &mut pages,
+                    &mut current,
+                    &mut at_page_index,
+                );
             }
             Block::List(items) => {
                 if let Some(start_idx) = pending_chapter_start.take() {
@@ -229,15 +260,20 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
                         } else {
                             lines[i].clone()
                         };
-                        current.lines.push(StyledLine::from_plain(out));
-                        if current.lines.len() as u16 >= size.height {
-                            pages.push(current.clone());
-                            current = Page { lines: Vec::new() };
-                            at_page_index += 1;
-                        }
+                        push_line(
+                            StyledLine::from_plain(out),
+                            &mut pages,
+                            &mut current,
+                            &mut at_page_index,
+                        );
                     }
                 }
-                current.lines.push(StyledLine::from_plain(String::new()));
+                push_line(
+                    StyledLine::from_plain(String::new()),
+                    &mut pages,
+                    &mut current,
+                    &mut at_page_index,
+                );
             }
             Block::Code { text, lang } => {
                 if let Some(start_idx) = pending_chapter_start.take() {
@@ -270,14 +306,14 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
                         });
                     }
                     let clipped = clip_segments(segs, max_width.max(4));
-                    current.lines.push(clipped);
-                    if current.lines.len() as u16 >= size.height {
-                        pages.push(current.clone());
-                        current = Page { lines: Vec::new() };
-                        at_page_index += 1;
-                    }
+                    push_line(clipped, &mut pages, &mut current, &mut at_page_index);
                 }
-                current.lines.push(StyledLine::from_plain(String::new()));
+                push_line(
+                    StyledLine::from_plain(String::new()),
+                    &mut pages,
+                    &mut current,
+                    &mut at_page_index,
+                );
             }
         }
     }

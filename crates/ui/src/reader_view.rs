@@ -241,13 +241,7 @@ impl ReaderView {
             .chapter_starts
             .iter()
             .rposition(|&p| p <= self.current)
-            .map(|idx| {
-                self.chapter_titles
-                    .get(idx)
-                    .cloned()
-                    .filter(|s| !s.trim().is_empty())
-                    .unwrap_or_else(|| format!("Chapter {}", idx + 1))
-            })
+            .map(|idx| self.chapter_label(idx))
             .unwrap_or_else(|| "".to_string());
         // Build powerline-style header segments: left chapter, right page
         let mut left = chapter_label;
@@ -603,6 +597,22 @@ impl ReaderView {
         style
     }
 
+    pub fn chapter_title(&self, idx: usize) -> String {
+        self.chapter_titles
+            .get(idx)
+            .map(|title| sanitize_chapter_title(title))
+            .unwrap_or_default()
+    }
+
+    pub fn chapter_label(&self, idx: usize) -> String {
+        let title = self.chapter_title(idx);
+        if title.is_empty() {
+            format!("Chapter {}", idx + 1)
+        } else {
+            title
+        }
+    }
+
     fn selection_line<'a>(
         line: &'a StyledLine,
         sel_start: usize,
@@ -681,6 +691,122 @@ fn selection_for_line(
     } else {
         Some((start_col.min(end_col), end_col.max(start_col)))
     }
+}
+
+fn sanitize_chapter_title(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let stripped = strip_parenthetical_links(trimmed);
+    if stripped.is_empty() {
+        return String::new();
+    }
+    let lower = stripped.to_ascii_lowercase();
+    let looks_like_file =
+        lower.ends_with(".xhtml") || lower.ends_with(".html") || lower.ends_with(".htm");
+    let has_path = stripped.contains('/') || stripped.contains('\\');
+    if !looks_like_file && !has_path {
+        return stripped.to_string();
+    }
+    let mut s = stripped.as_str();
+    if let Some(pos) = s.find('#') {
+        s = &s[..pos];
+    }
+    if let Some(pos) = s.find('?') {
+        s = &s[..pos];
+    }
+    if let Some(seg) = s.rsplit(&['/', '\\'][..]).next() {
+        s = seg;
+    }
+    let mut cleaned = s.to_string();
+    let lower = cleaned.to_ascii_lowercase();
+    for ext in [".xhtml", ".html", ".htm"] {
+        if lower.ends_with(ext) && cleaned.len() > ext.len() {
+            let new_len = cleaned.len() - ext.len();
+            cleaned.truncate(new_len);
+            break;
+        }
+    }
+    let mut out = String::with_capacity(cleaned.len());
+    let mut last_space = false;
+    for ch in cleaned.chars() {
+        let mapped = match ch {
+            '_' | '-' | '.' => ' ',
+            _ => ch,
+        };
+        if mapped.is_whitespace() {
+            if !last_space {
+                out.push(' ');
+            }
+            last_space = true;
+        } else {
+            out.push(mapped);
+            last_space = false;
+        }
+    }
+    let out = out.trim().to_string();
+    if out.is_empty() {
+        stripped
+    } else {
+        out
+    }
+}
+
+fn strip_parenthetical_links(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut buf = String::new();
+    let mut in_paren = false;
+    for ch in input.chars() {
+        if ch == '(' {
+            if !in_paren {
+                in_paren = true;
+                buf.clear();
+                continue;
+            }
+        }
+        if ch == ')' && in_paren {
+            let lower = buf.to_ascii_lowercase();
+            let is_link = lower.contains(".xhtml")
+                || lower.contains(".html")
+                || lower.contains(".htm")
+                || lower.contains("http://")
+                || lower.contains("https://");
+            if !is_link {
+                out.push(' ');
+                out.push('(');
+                out.push_str(buf.trim());
+                out.push(')');
+            }
+            in_paren = false;
+            buf.clear();
+            continue;
+        }
+        if in_paren {
+            buf.push(ch);
+        } else {
+            out.push(ch);
+        }
+    }
+    if in_paren {
+        out.push(' ');
+        out.push('(');
+        out.push_str(buf.trim());
+    }
+    let mut cleaned = String::with_capacity(out.len());
+    let mut last_space = false;
+    for ch in out.chars() {
+        if ch.is_whitespace() {
+            if !last_space {
+                cleaned.push(' ');
+            }
+            last_space = true;
+        } else {
+            cleaned.push(ch);
+            last_space = false;
+        }
+    }
+    cleaned.trim().to_string()
 }
 
 #[cfg(test)]

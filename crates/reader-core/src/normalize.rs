@@ -45,7 +45,7 @@ pub fn html_to_blocks(html: &str) -> Vec<Block> {
                 for li in node.children() {
                     if let Some(li_el) = li.as_element() {
                         if li_el.name.local.as_ref() == "li" {
-                            let text = inline_text(&li);
+                            let text = list_item_text(&li);
                             if !text.is_empty() {
                                 items.push(text);
                             }
@@ -144,7 +144,7 @@ fn append_inline_text(node: &NodeRef, out: &mut String) {
             }
             out.push_str(&label);
             if let Some(href) = href {
-                if !href.is_empty() && !label.contains(&href) {
+                if is_external_href(&href) && !href.is_empty() && !label.contains(&href) {
                     out.push_str(" (");
                     out.push_str(&href);
                     out.push(')');
@@ -205,6 +205,93 @@ fn collect_inline_children(node: &NodeRef) -> String {
     normalize_inline_text(&out)
 }
 
+fn list_item_text(node: &NodeRef) -> String {
+    let mut out = String::new();
+    append_inline_text_without_lists(node, &mut out);
+    normalize_inline_text(&out)
+}
+
+fn append_inline_text_without_lists(node: &NodeRef, out: &mut String) {
+    if let Some(text) = node.as_text() {
+        out.push_str(&text.borrow());
+        return;
+    }
+    let Some(el) = node.as_element() else {
+        for child in node.children() {
+            append_inline_text_without_lists(&child, out);
+        }
+        return;
+    };
+    let tag = el.name.local.to_lowercase();
+    if tag == "ul" || tag == "ol" {
+        return;
+    }
+    match tag.as_str() {
+        "br" => out.push('\n'),
+        "a" => {
+            let label = collect_inline_children(node);
+            let href = el.attributes.borrow().get("href").map(|s| s.to_string());
+            if label.is_empty() {
+                if let Some(href) = href {
+                    out.push_str(&href);
+                }
+                return;
+            }
+            out.push_str(&label);
+            if let Some(href) = href {
+                if is_external_href(&href) && !href.is_empty() && !label.contains(&href) {
+                    out.push_str(" (");
+                    out.push_str(&href);
+                    out.push(')');
+                }
+            }
+        }
+        "img" => out.push_str(&image_placeholder(node)),
+        "em" | "i" => append_wrapped_marker(node, out, "*"),
+        "strong" | "b" => append_wrapped_marker(node, out, "**"),
+        "code" | "kbd" | "samp" => append_wrapped_marker(node, out, "`"),
+        "del" | "s" | "strike" => append_wrapped_marker(node, out, "~~"),
+        "sup" => append_wrapped_pair(node, out, "^{", "}"),
+        "sub" => append_wrapped_pair(node, out, "_{", "}"),
+        "abbr" => {
+            let label = collect_inline_children(node);
+            if label.is_empty() {
+                return;
+            }
+            out.push_str(&label);
+            if let Some(title) = el.attributes.borrow().get("title") {
+                let title = normalize_inline_text(title);
+                if !title.is_empty() && !label.contains(&title) {
+                    out.push_str(" (");
+                    out.push_str(&title);
+                    out.push(')');
+                }
+            }
+        }
+        "math" => {
+            let label = collect_inline_children(node);
+            if label.is_empty() {
+                out.push_str("[math]");
+            } else {
+                out.push_str(&label);
+            }
+        }
+        "svg" => {
+            let label = collect_inline_children(node);
+            if label.is_empty() {
+                out.push_str("[svg]");
+            } else {
+                out.push_str(&label);
+            }
+        }
+        _ => {
+            for child in node.children() {
+                append_inline_text_without_lists(&child, out);
+            }
+        }
+    }
+}
+
 fn append_wrapped_marker(node: &NodeRef, out: &mut String, marker: &str) {
     let label = collect_inline_children(node);
     if label.is_empty() {
@@ -236,6 +323,14 @@ fn normalize_inline_text(s: &str) -> String {
         .replace(['\u{2028}', '\u{2029}'], "\n")
         .replace('\u{FEFF}', "");
     normalize_lines(&s)
+}
+
+fn is_external_href(href: &str) -> bool {
+    let lower = href.trim().to_ascii_lowercase();
+    lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("mailto:")
+        || lower.starts_with("tel:")
 }
 
 fn normalize_lines(s: &str) -> String {

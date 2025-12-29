@@ -263,12 +263,16 @@ impl App {
         let mut items: Vec<String> = Vec::new();
         let mut pages: Vec<usize> = Vec::new();
         for (i, pidx) in view.chapter_starts.iter().enumerate() {
-            let title = self
-                .chapter_titles
-                .get(i)
-                .cloned()
-                .unwrap_or_else(|| format!("Chapter {}", i + 1));
-            items.push(format!("{}  (page {})", title, pidx + 1));
+            let title = view.chapter_title(i);
+            let chapter_label = format!("Chapter {}", i + 1);
+            let entry = if title.is_empty() {
+                chapter_label
+            } else if title.to_ascii_lowercase().starts_with("chapter") {
+                title
+            } else {
+                format!("{}: {}", chapter_label, title)
+            };
+            items.push(format!("{}  (page {})", entry, pidx + 1));
             pages.push(*pidx);
         }
         (items, pages)
