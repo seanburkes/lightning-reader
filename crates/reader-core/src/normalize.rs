@@ -132,7 +132,7 @@ fn append_inline_text(node: &NodeRef, out: &mut String) {
     };
     let tag = el.name.local.to_lowercase();
     match tag.as_str() {
-        "br" => out.push_str(" / "),
+        "br" => out.push('\n'),
         "a" => {
             let label = collect_inline_children(node);
             let href = el.attributes.borrow().get("href").map(|s| s.to_string());
@@ -228,14 +228,26 @@ fn append_wrapped_pair(node: &NodeRef, out: &mut String, prefix: &str, suffix: &
 fn normalize_inline_text(s: &str) -> String {
     let s = s
         .replace('\u{00A0}', " ")
-        .replace('\n', " ")
-        .replace('\r', " ")
+        .replace('\r', "")
         .replace(
             ['\u{200B}', '\u{200C}', '\u{200D}', '\u{200E}', '\u{200F}'],
             "",
         )
-        .replace(['\u{2028}', '\u{2029}'], " ")
+        .replace(['\u{2028}', '\u{2029}'], "\n")
         .replace('\u{FEFF}', "");
+    normalize_lines(&s)
+}
+
+fn normalize_lines(s: &str) -> String {
+    let mut out_lines = Vec::new();
+    for line in s.split('\n') {
+        out_lines.push(normalize_line(line));
+    }
+    let out = out_lines.join("\n");
+    out.trim().to_string()
+}
+
+fn normalize_line(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut last_space = false;
     for ch in s.chars() {
@@ -249,7 +261,57 @@ fn normalize_inline_text(s: &str) -> String {
             last_space = false;
         }
     }
-    out.trim().to_string()
+    let mut cleaned = String::with_capacity(out.len());
+    let mut prev_was_space = false;
+    let punct = [',', '.', ';', ':', '!', '?', ')', ']', '”'];
+    for ch in out.chars() {
+        if punct.contains(&ch) {
+            if prev_was_space {
+                let _ = cleaned.pop();
+            }
+            cleaned.push(ch);
+            prev_was_space = false;
+        } else if ch.is_whitespace() {
+            if !prev_was_space {
+                cleaned.push(' ');
+                prev_was_space = true;
+            }
+        } else {
+            cleaned.push(ch);
+            prev_was_space = false;
+        }
+    }
+    dehyphenate(&cleaned).trim().to_string()
+}
+
+fn dehyphenate(input: &str) -> String {
+    let tokens: Vec<&str> = input.split(' ').collect();
+    if tokens.len() < 2 {
+        return input.to_string();
+    }
+    let mut out: Vec<String> = Vec::with_capacity(tokens.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        let tok = tokens[i];
+        if tok.ends_with('-') && i + 1 < tokens.len() {
+            let next = tokens[i + 1];
+            if next
+                .chars()
+                .next()
+                .map(|c| c.is_lowercase())
+                .unwrap_or(false)
+            {
+                let mut joined = tok.trim_end_matches('-').to_string();
+                joined.push_str(next);
+                out.push(joined);
+                i += 2;
+                continue;
+            }
+        }
+        out.push(tok.to_string());
+        i += 1;
+    }
+    out.join(" ")
 }
 
 fn image_placeholder(node: &NodeRef) -> String {
@@ -361,96 +423,35 @@ fn definition_list_block(node: &NodeRef) -> Option<Block> {
 
 // Lightweight post-processing to smooth whitespace/newlines inside paragraphs/headings
 pub fn postprocess_blocks(mut blocks: Vec<Block>) -> Vec<Block> {
-    fn clean_text(s: &str) -> String {
+    fn clean_text(s: &str, preserve_newlines: bool) -> String {
         let s = s.replace('\u{00A0}', " "); // nbsp to space
-        let s = s.replace('\n', " "); // strip hard newlines (incl. soft breaks like <br>)
-        let s = s.replace('\r', " ");
+        let s = s.replace('\r', "");
         // Strip zero-width/invisible separators
         let s = s
             .replace(
                 ['\u{200B}', '\u{200C}', '\u{200D}', '\u{200E}', '\u{200F}'],
                 "",
             )
-            .replace(['\u{2028}', '\u{2029}'], " ")
+            .replace(['\u{2028}', '\u{2029}'], "\n")
             .replace('\u{FEFF}', "");
-        // Collapse whitespace to single spaces
-        let mut out = String::with_capacity(s.len());
-        let mut last_space = false;
-        for ch in s.chars() {
-            if ch.is_whitespace() {
-                if !last_space {
-                    out.push(' ');
-                }
-                last_space = true;
-            } else {
-                out.push(ch);
-                last_space = false;
-            }
+        if preserve_newlines {
+            normalize_lines(&s)
+        } else {
+            normalize_line(&s.replace('\n', " "))
         }
-        let s = out.trim().to_string();
-        // Remove spaces before common punctuation
-        let punct = [',', '.', ';', ':', '!', '?', ')', ']', '”'];
-        let mut cleaned = String::with_capacity(s.len());
-        let mut prev_was_space = false;
-        for ch in s.chars() {
-            if punct.contains(&ch) {
-                if prev_was_space {
-                    // drop the preceding space
-                    let _ = cleaned.pop();
-                }
-                cleaned.push(ch);
-                prev_was_space = false;
-            } else if ch.is_whitespace() {
-                // ensure single space
-                if !prev_was_space {
-                    cleaned.push(' ');
-                    prev_was_space = true;
-                }
-            } else {
-                cleaned.push(ch);
-                prev_was_space = false;
-            }
-        }
-        let cleaned = cleaned.trim().to_string();
-        // Conservative de-hyphenation across soft line joins: "word- next" => "wordnext" if next starts lowercase
-        fn dehyphenate(input: &str) -> String {
-            let tokens: Vec<&str> = input.split(' ').collect();
-            if tokens.len() < 2 {
-                return input.to_string();
-            }
-            let mut out: Vec<String> = Vec::with_capacity(tokens.len());
-            let mut i = 0;
-            while i < tokens.len() {
-                let tok = tokens[i];
-                if tok.ends_with('-') && i + 1 < tokens.len() {
-                    let next = tokens[i + 1];
-                    if next
-                        .chars()
-                        .next()
-                        .map(|c| c.is_lowercase())
-                        .unwrap_or(false)
-                    {
-                        // Join and skip next
-                        let mut joined = tok.trim_end_matches('-').to_string();
-                        joined.push_str(next);
-                        out.push(joined);
-                        i += 2;
-                        continue;
-                    }
-                }
-                out.push(tok.to_string());
-                i += 1;
-            }
-            out.join(" ")
-        }
-        dehyphenate(&cleaned)
     }
 
     // First pass: whitespace cleanup on headings/paragraphs
     for b in &mut blocks {
         match b {
-            Block::Paragraph(ref mut t) | Block::Heading(ref mut t, _) => {
-                *t = clean_text(t);
+            Block::Paragraph(ref mut t) => {
+                *t = clean_text(t, true);
+            }
+            Block::Heading(ref mut t, _) => {
+                *t = clean_text(t, false);
+            }
+            Block::Quote(ref mut t) => {
+                *t = clean_text(t, true);
             }
             _ => {}
         }
@@ -505,6 +506,16 @@ mod tests {
         assert!(matches!(
             blocks[0],
             Block::Code { ref text, .. } if text == "Head | Value\nA | B"
+        ));
+    }
+
+    #[test]
+    fn preserves_line_breaks_from_br() {
+        let html = r#"<p>Line one<br/>Line two</p>"#;
+        let blocks = postprocess_blocks(html_to_blocks(html));
+        assert!(matches!(
+            blocks[0],
+            Block::Paragraph(ref t) if t == "Line one\nLine two"
         ));
     }
 
