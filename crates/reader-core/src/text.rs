@@ -38,7 +38,12 @@ impl TextFile {
             author: None,
             format,
         };
-        Document::new(info, blocks, vec![title])
+        Document::new(
+            info,
+            blocks,
+            vec![title],
+            vec![self.path.to_string_lossy().into_owned()],
+        )
     }
 }
 

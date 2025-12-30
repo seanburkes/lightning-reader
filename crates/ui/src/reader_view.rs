@@ -69,6 +69,8 @@ pub struct ReaderView {
     pub two_pane: bool,
     pub chapter_starts: Vec<usize>,
     pub chapter_titles: Vec<String>,
+    pub chapter_hrefs: Vec<String>,
+    pub anchors: HashMap<String, usize>,
     pub book_title: Option<String>,
     pub author: Option<String>,
     pub theme: Theme,
@@ -82,7 +84,7 @@ pub struct ReaderView {
     image_placements: Vec<RenderImage>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SelectionPoint {
     pub page: usize,
     pub line: usize,
@@ -129,6 +131,8 @@ impl ReaderView {
             two_pane: false,
             chapter_starts: Vec::new(),
             chapter_titles: Vec::new(),
+            chapter_hrefs: Vec::new(),
+            anchors: HashMap::new(),
             book_title: None,
             author: None,
             theme: Theme::default(),
@@ -569,6 +573,7 @@ impl ReaderView {
         let p = reader_core::layout::paginate_with_justify(blocks, size, self.justify);
         self.pages = p.pages;
         self.chapter_starts = p.chapter_starts;
+        self.anchors = p.anchors;
         self.current = self.current.min(self.pages.len().saturating_sub(1));
         if self.two_pane {
             self.current = self.current.saturating_sub(self.current % 2);
@@ -722,6 +727,9 @@ impl ReaderView {
         if seg.style.strike {
             style = style.add_modifier(Modifier::CROSSED_OUT);
         }
+        if seg.link.is_some() {
+            style = style.add_modifier(Modifier::UNDERLINED);
+        }
         style
     }
 
@@ -774,6 +782,81 @@ impl ReaderView {
         } else {
             title
         }
+    }
+
+    pub fn link_at_point(&self, point: SelectionPoint) -> Option<String> {
+        let page = self.pages.get(point.page)?;
+        let line = page.lines.get(point.line)?;
+        let mut offset = 0usize;
+        for seg in &line.segments {
+            let seg_text = Self::segment_display_text(seg);
+            let seg_len = seg_text.graphemes(true).count();
+            if point.col < offset + seg_len {
+                return seg.link.clone();
+            }
+            offset += seg_len;
+        }
+        None
+    }
+
+    pub fn jump_to_target(&mut self, target: &str) -> bool {
+        let Some(mut page) = self.resolve_target_page(target) else {
+            return false;
+        };
+        if !self.pages.is_empty() {
+            page = page.min(self.pages.len().saturating_sub(1));
+        }
+        if self.two_pane {
+            page = page.saturating_sub(page % 2);
+        }
+        self.current = page;
+        true
+    }
+
+    fn resolve_target_page(&self, target: &str) -> Option<usize> {
+        let target = target.trim();
+        if target.is_empty() {
+            return None;
+        }
+        if let Some(page) = self.anchors.get(target) {
+            return Some(*page);
+        }
+        if target.starts_with('#') {
+            if let Some(prefix) = self.current_chapter_href() {
+                let full = format!("{}{}", prefix, target);
+                if let Some(page) = self.anchors.get(&full) {
+                    return Some(*page);
+                }
+            }
+        }
+        if let Some((path, _frag)) = target.split_once('#') {
+            if let Some(idx) = self.chapter_hrefs.iter().position(|h| h == path) {
+                return self.chapter_starts.get(idx).copied();
+            }
+        } else if let Some(idx) = self.chapter_hrefs.iter().position(|h| h == target) {
+            return self.chapter_starts.get(idx).copied();
+        }
+        None
+    }
+
+    fn current_chapter_href(&self) -> Option<&str> {
+        let idx = self.current_chapter_index()?;
+        self.chapter_hrefs.get(idx).map(|s| s.as_str())
+    }
+
+    fn current_chapter_index(&self) -> Option<usize> {
+        if self.chapter_starts.is_empty() {
+            return None;
+        }
+        let mut idx = 0usize;
+        for (i, start) in self.chapter_starts.iter().enumerate() {
+            if *start <= self.current {
+                idx = i;
+            } else {
+                break;
+            }
+        }
+        Some(idx)
     }
 
     fn selection_line(
@@ -979,6 +1062,22 @@ fn strip_inline_markers(input: &str) -> String {
             let _ = chars.next();
             continue;
         }
+        if ch == '\x1C' {
+            while let Some(next) = chars.next() {
+                if next == '\x1D' {
+                    break;
+                }
+            }
+            continue;
+        }
+        if ch == '\x18' {
+            while let Some(next) = chars.next() {
+                if next == '\x17' {
+                    break;
+                }
+            }
+            continue;
+        }
         out.push(ch);
     }
     out
@@ -1049,6 +1148,7 @@ mod tests {
                         fg: None,
                         bg: None,
                         style: TextStyle::default(),
+                        link: None,
                     }],
                     image: None,
                 })
@@ -1107,6 +1207,7 @@ mod tests {
                 fg: None,
                 bg: None,
                 style: TextStyle::default(),
+                link: None,
             }],
             image: None,
         };
@@ -1125,6 +1226,7 @@ mod tests {
                 fg: None,
                 bg: None,
                 style: TextStyle::default(),
+                link: None,
             }],
             image: None,
         };

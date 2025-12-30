@@ -2,12 +2,25 @@ use crate::types::{Block, ImageBlock};
 use kuchiki::{traits::*, NodeRef};
 
 pub fn html_to_blocks(html: &str) -> Vec<Block> {
-    html_to_blocks_with_images(html, |_| None)
+    html_to_blocks_with_assets(html, None, |_| None, |_| None)
 }
 
-pub fn html_to_blocks_with_images<F>(html: &str, mut resolve: F) -> Vec<Block>
+pub fn html_to_blocks_with_images<F>(html: &str, resolve: F) -> Vec<Block>
 where
     F: FnMut(&str) -> Option<(String, Vec<u8>)>,
+{
+    html_to_blocks_with_assets(html, None, resolve, |_| None)
+}
+
+pub fn html_to_blocks_with_assets<FImg, FLink>(
+    html: &str,
+    anchor_prefix: Option<&str>,
+    mut resolve_image: FImg,
+    mut resolve_link: FLink,
+) -> Vec<Block>
+where
+    FImg: FnMut(&str) -> Option<(String, Vec<u8>)>,
+    FLink: FnMut(&str) -> Option<String>,
 {
     let parser = kuchiki::parse_html().one(html.to_string());
     let mut blocks = Vec::new();
@@ -19,14 +32,19 @@ where
             .map(|lvl| lvl.min(6))
     }
 
-    fn extract_block<F>(node: &NodeRef, resolve: &mut F) -> Option<Block>
+    fn extract_block<FImg, FLink>(
+        node: &NodeRef,
+        ctx: &mut InlineContext<'_, FLink>,
+        resolve_image: &mut FImg,
+    ) -> Option<Block>
     where
-        F: FnMut(&str) -> Option<(String, Vec<u8>)>,
+        FImg: FnMut(&str) -> Option<(String, Vec<u8>)>,
+        FLink: FnMut(&str) -> Option<String>,
     {
         let el = node.as_element()?;
         let tag = el.name.local.to_lowercase();
         if let Some(level) = heading_level(&tag) {
-            let text = inline_text(node);
+            let text = inline_text(node, ctx);
             return if text.is_empty() {
                 None
             } else {
@@ -35,7 +53,7 @@ where
         }
         match tag.as_str() {
             "p" => {
-                let text = inline_text(node);
+                let text = inline_text(node, ctx);
                 if text.is_empty() {
                     None
                 } else {
@@ -43,7 +61,7 @@ where
                 }
             }
             "blockquote" => {
-                let text = inline_text(node);
+                let text = inline_text(node, ctx);
                 if text.is_empty() {
                     None
                 } else {
@@ -55,7 +73,7 @@ where
                 for li in node.children() {
                     if let Some(li_el) = li.as_element() {
                         if li_el.name.local.as_ref() == "li" {
-                            let text = list_item_text(&li);
+                            let text = list_item_text(&li, ctx);
                             if !text.is_empty() {
                                 items.push(text);
                             }
@@ -81,12 +99,12 @@ where
                     .unwrap_or_else(|| node.text_contents());
                 Some(Block::Code { lang, text })
             }
-            "img" => image_block(node, resolve),
-            "figure" => figure_block(node, resolve),
-            "table" => table_block(node),
-            "dl" => definition_list_block(node),
+            "img" => image_block(node, resolve_image),
+            "figure" => figure_block(node, ctx, resolve_image),
+            "table" => table_block(node, ctx),
+            "dl" => definition_list_block(node, ctx),
             "aside" => {
-                let text = inline_text(node);
+                let text = inline_text(node, ctx);
                 if text.is_empty() {
                     None
                 } else {
@@ -100,20 +118,29 @@ where
         }
     }
 
-    fn collect<F>(node: &NodeRef, out: &mut Vec<Block>, resolve: &mut F)
-    where
-        F: FnMut(&str) -> Option<(String, Vec<u8>)>,
+    fn collect<FImg, FLink>(
+        node: &NodeRef,
+        out: &mut Vec<Block>,
+        ctx: &mut InlineContext<'_, FLink>,
+        resolve_image: &mut FImg,
+    ) where
+        FImg: FnMut(&str) -> Option<(String, Vec<u8>)>,
+        FLink: FnMut(&str) -> Option<String>,
     {
         for child in node.children() {
-            if let Some(block) = extract_block(&child, resolve) {
+            if let Some(block) = extract_block(&child, ctx, resolve_image) {
                 out.push(block);
                 continue;
             }
-            collect(&child, out, resolve);
+            collect(&child, out, ctx, resolve_image);
         }
     }
 
-    collect(&parser, &mut blocks, &mut resolve);
+    let mut ctx = InlineContext {
+        resolve_link: &mut resolve_link,
+        anchor_prefix,
+    };
+    collect(&parser, &mut blocks, &mut ctx, &mut resolve_image);
 
     if blocks.is_empty() {
         // Fallback: whole document text as a paragraph
@@ -128,30 +155,51 @@ where
 
 const STYLE_START: char = '\x1E';
 const STYLE_END: char = '\x1F';
-const BR_MARKER: char = '\x1D';
+const BR_MARKER: char = '\x1A';
+const LINK_START: char = '\x1C';
+const LINK_END: char = '\x1D';
+const ANCHOR_START: char = '\x18';
+const ANCHOR_END: char = '\x17';
 
-fn inline_text(node: &NodeRef) -> String {
+struct InlineContext<'a, F>
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    resolve_link: &'a mut F,
+    anchor_prefix: Option<&'a str>,
+}
+
+fn inline_text<F>(node: &NodeRef, ctx: &mut InlineContext<'_, F>) -> String
+where
+    F: FnMut(&str) -> Option<String>,
+{
     let mut out = String::new();
-    append_inline_text(node, &mut out);
+    append_inline_text(node, &mut out, ctx);
     normalize_inline_text(&out)
 }
 
-fn append_inline_text(node: &NodeRef, out: &mut String) {
+fn append_inline_text<F>(node: &NodeRef, out: &mut String, ctx: &mut InlineContext<'_, F>)
+where
+    F: FnMut(&str) -> Option<String>,
+{
     if let Some(text) = node.as_text() {
         out.push_str(&text.borrow());
         return;
     }
     let Some(el) = node.as_element() else {
         for child in node.children() {
-            append_inline_text(&child, out);
+            append_inline_text(&child, out, ctx);
         }
         return;
     };
+    if let Some(anchor) = anchor_id(el) {
+        push_anchor_marker(out, &anchor, ctx.anchor_prefix);
+    }
     let tag = el.name.local.to_lowercase();
     match tag.as_str() {
         "br" => out.push(BR_MARKER),
         "a" => {
-            let label = collect_inline_children(node);
+            let label = collect_inline_children(node, ctx);
             let href = el.attributes.borrow().get("href").map(|s| s.to_string());
             if label.is_empty() {
                 if let Some(href) = href {
@@ -159,35 +207,45 @@ fn append_inline_text(node: &NodeRef, out: &mut String) {
                 }
                 return;
             }
-            out.push_str(&label);
             if let Some(href) = href {
+                if !is_external_href(&href) {
+                    if let Some(target) = (ctx.resolve_link)(href.trim()) {
+                        push_link_start(out, &target);
+                        out.push_str(&label);
+                        push_link_end(out);
+                        return;
+                    }
+                }
                 if is_external_href(&href) && !href.is_empty() && !label.contains(&href) {
+                    out.push_str(&label);
                     out.push_str(" (");
                     out.push_str(&href);
                     out.push(')');
+                    return;
                 }
             }
+            out.push_str(&label);
         }
         "img" => out.push_str(&image_inline_text(node)),
-        "em" | "i" => append_wrapped_style(node, out, 'i'),
-        "strong" | "b" => append_wrapped_style(node, out, 'b'),
-        "code" | "kbd" | "samp" => append_wrapped_style(node, out, 'c'),
-        "del" | "s" | "strike" => append_wrapped_style(node, out, 'x'),
-        "u" => append_wrapped_style(node, out, 'u'),
+        "em" | "i" => append_wrapped_style(node, out, 'i', ctx),
+        "strong" | "b" => append_wrapped_style(node, out, 'b', ctx),
+        "code" | "kbd" | "samp" => append_wrapped_style(node, out, 'c', ctx),
+        "del" | "s" | "strike" => append_wrapped_style(node, out, 'x', ctx),
+        "u" => append_wrapped_style(node, out, 'u', ctx),
         "span" => {
             let styles = span_style_codes(el);
             if styles.is_empty() {
                 for child in node.children() {
-                    append_inline_text(&child, out);
+                    append_inline_text(&child, out, ctx);
                 }
             } else {
-                append_wrapped_styles(node, out, &styles);
+                append_wrapped_styles(node, out, &styles, ctx);
             }
         }
-        "sup" => append_wrapped_pair(node, out, "^{", "}"),
-        "sub" => append_wrapped_pair(node, out, "_{", "}"),
+        "sup" => append_wrapped_pair(node, out, "^{", "}", ctx),
+        "sub" => append_wrapped_pair(node, out, "_{", "}", ctx),
         "abbr" => {
-            let label = collect_inline_children(node);
+            let label = collect_inline_children(node, ctx);
             if label.is_empty() {
                 return;
             }
@@ -202,7 +260,7 @@ fn append_inline_text(node: &NodeRef, out: &mut String) {
             }
         }
         "math" => {
-            let label = collect_inline_children(node);
+            let label = collect_inline_children(node, ctx);
             if label.is_empty() {
                 out.push_str("[math]");
             } else {
@@ -210,7 +268,7 @@ fn append_inline_text(node: &NodeRef, out: &mut String) {
             }
         }
         "svg" => {
-            let label = collect_inline_children(node);
+            let label = collect_inline_children(node, ctx);
             if label.is_empty() {
                 out.push_str("[svg]");
             } else {
@@ -219,37 +277,52 @@ fn append_inline_text(node: &NodeRef, out: &mut String) {
         }
         _ => {
             for child in node.children() {
-                append_inline_text(&child, out);
+                append_inline_text(&child, out, ctx);
             }
         }
     }
 }
 
-fn collect_inline_children(node: &NodeRef) -> String {
+fn collect_inline_children<F>(node: &NodeRef, ctx: &mut InlineContext<'_, F>) -> String
+where
+    F: FnMut(&str) -> Option<String>,
+{
     let mut out = String::new();
     for child in node.children() {
-        append_inline_text(&child, &mut out);
+        append_inline_text(&child, &mut out, ctx);
     }
     normalize_inline_text(&out)
 }
 
-fn list_item_text(node: &NodeRef) -> String {
+fn list_item_text<F>(node: &NodeRef, ctx: &mut InlineContext<'_, F>) -> String
+where
+    F: FnMut(&str) -> Option<String>,
+{
     let mut out = String::new();
-    append_inline_text_without_lists(node, &mut out);
+    append_inline_text_without_lists(node, &mut out, ctx);
     normalize_inline_text(&out)
 }
 
-fn append_inline_text_without_lists(node: &NodeRef, out: &mut String) {
+fn append_inline_text_without_lists<F>(
+    node: &NodeRef,
+    out: &mut String,
+    ctx: &mut InlineContext<'_, F>,
+) where
+    F: FnMut(&str) -> Option<String>,
+{
     if let Some(text) = node.as_text() {
         out.push_str(&text.borrow());
         return;
     }
     let Some(el) = node.as_element() else {
         for child in node.children() {
-            append_inline_text_without_lists(&child, out);
+            append_inline_text_without_lists(&child, out, ctx);
         }
         return;
     };
+    if let Some(anchor) = anchor_id(el) {
+        push_anchor_marker(out, &anchor, ctx.anchor_prefix);
+    }
     let tag = el.name.local.to_lowercase();
     if tag == "ul" || tag == "ol" {
         return;
@@ -257,7 +330,7 @@ fn append_inline_text_without_lists(node: &NodeRef, out: &mut String) {
     match tag.as_str() {
         "br" => out.push(BR_MARKER),
         "a" => {
-            let label = collect_inline_children(node);
+            let label = collect_inline_children(node, ctx);
             let href = el.attributes.borrow().get("href").map(|s| s.to_string());
             if label.is_empty() {
                 if let Some(href) = href {
@@ -265,35 +338,45 @@ fn append_inline_text_without_lists(node: &NodeRef, out: &mut String) {
                 }
                 return;
             }
-            out.push_str(&label);
             if let Some(href) = href {
+                if !is_external_href(&href) {
+                    if let Some(target) = (ctx.resolve_link)(href.trim()) {
+                        push_link_start(out, &target);
+                        out.push_str(&label);
+                        push_link_end(out);
+                        return;
+                    }
+                }
                 if is_external_href(&href) && !href.is_empty() && !label.contains(&href) {
+                    out.push_str(&label);
                     out.push_str(" (");
                     out.push_str(&href);
                     out.push(')');
+                    return;
                 }
             }
+            out.push_str(&label);
         }
         "img" => out.push_str(&image_inline_text(node)),
-        "em" | "i" => append_wrapped_style(node, out, 'i'),
-        "strong" | "b" => append_wrapped_style(node, out, 'b'),
-        "code" | "kbd" | "samp" => append_wrapped_style(node, out, 'c'),
-        "del" | "s" | "strike" => append_wrapped_style(node, out, 'x'),
-        "u" => append_wrapped_style(node, out, 'u'),
+        "em" | "i" => append_wrapped_style(node, out, 'i', ctx),
+        "strong" | "b" => append_wrapped_style(node, out, 'b', ctx),
+        "code" | "kbd" | "samp" => append_wrapped_style(node, out, 'c', ctx),
+        "del" | "s" | "strike" => append_wrapped_style(node, out, 'x', ctx),
+        "u" => append_wrapped_style(node, out, 'u', ctx),
         "span" => {
             let styles = span_style_codes(el);
             if styles.is_empty() {
                 for child in node.children() {
-                    append_inline_text_without_lists(&child, out);
+                    append_inline_text_without_lists(&child, out, ctx);
                 }
             } else {
-                append_wrapped_styles(node, out, &styles);
+                append_wrapped_styles(node, out, &styles, ctx);
             }
         }
-        "sup" => append_wrapped_pair(node, out, "^{", "}"),
-        "sub" => append_wrapped_pair(node, out, "_{", "}"),
+        "sup" => append_wrapped_pair(node, out, "^{", "}", ctx),
+        "sub" => append_wrapped_pair(node, out, "_{", "}", ctx),
         "abbr" => {
-            let label = collect_inline_children(node);
+            let label = collect_inline_children(node, ctx);
             if label.is_empty() {
                 return;
             }
@@ -308,7 +391,7 @@ fn append_inline_text_without_lists(node: &NodeRef, out: &mut String) {
             }
         }
         "math" => {
-            let label = collect_inline_children(node);
+            let label = collect_inline_children(node, ctx);
             if label.is_empty() {
                 out.push_str("[math]");
             } else {
@@ -316,7 +399,7 @@ fn append_inline_text_without_lists(node: &NodeRef, out: &mut String) {
             }
         }
         "svg" => {
-            let label = collect_inline_children(node);
+            let label = collect_inline_children(node, ctx);
             if label.is_empty() {
                 out.push_str("[svg]");
             } else {
@@ -325,14 +408,21 @@ fn append_inline_text_without_lists(node: &NodeRef, out: &mut String) {
         }
         _ => {
             for child in node.children() {
-                append_inline_text_without_lists(&child, out);
+                append_inline_text_without_lists(&child, out, ctx);
             }
         }
     }
 }
 
-fn append_wrapped_style(node: &NodeRef, out: &mut String, code: char) {
-    let label = collect_inline_children(node);
+fn append_wrapped_style<F>(
+    node: &NodeRef,
+    out: &mut String,
+    code: char,
+    ctx: &mut InlineContext<'_, F>,
+) where
+    F: FnMut(&str) -> Option<String>,
+{
+    let label = collect_inline_children(node, ctx);
     if label.is_empty() {
         return;
     }
@@ -341,8 +431,15 @@ fn append_wrapped_style(node: &NodeRef, out: &mut String, code: char) {
     push_style_end(out, code);
 }
 
-fn append_wrapped_styles(node: &NodeRef, out: &mut String, codes: &[char]) {
-    let label = collect_inline_children(node);
+fn append_wrapped_styles<F>(
+    node: &NodeRef,
+    out: &mut String,
+    codes: &[char],
+    ctx: &mut InlineContext<'_, F>,
+) where
+    F: FnMut(&str) -> Option<String>,
+{
+    let label = collect_inline_children(node, ctx);
     if label.is_empty() {
         return;
     }
@@ -355,8 +452,16 @@ fn append_wrapped_styles(node: &NodeRef, out: &mut String, codes: &[char]) {
     }
 }
 
-fn append_wrapped_pair(node: &NodeRef, out: &mut String, prefix: &str, suffix: &str) {
-    let label = collect_inline_children(node);
+fn append_wrapped_pair<F>(
+    node: &NodeRef,
+    out: &mut String,
+    prefix: &str,
+    suffix: &str,
+    ctx: &mut InlineContext<'_, F>,
+) where
+    F: FnMut(&str) -> Option<String>,
+{
+    let label = collect_inline_children(node, ctx);
     if label.is_empty() {
         return;
     }
@@ -373,6 +478,52 @@ fn push_style_start(out: &mut String, code: char) {
 fn push_style_end(out: &mut String, code: char) {
     out.push(STYLE_END);
     out.push(code);
+}
+
+fn push_link_start(out: &mut String, target: &str) {
+    let target = target.trim();
+    if target.is_empty() {
+        return;
+    }
+    out.push(LINK_START);
+    out.push_str(target);
+    out.push(LINK_END);
+}
+
+fn push_link_end(out: &mut String) {
+    out.push(LINK_START);
+    out.push(LINK_END);
+}
+
+fn push_anchor_marker(out: &mut String, anchor: &str, prefix: Option<&str>) {
+    let anchor = anchor.trim();
+    if anchor.is_empty() {
+        return;
+    }
+    let anchor = anchor.strip_prefix('#').unwrap_or(anchor).trim();
+    if anchor.is_empty() {
+        return;
+    }
+    let mut target = String::new();
+    if let Some(prefix) = prefix {
+        if !prefix.is_empty() {
+            target.push_str(prefix);
+        }
+    }
+    target.push('#');
+    target.push_str(anchor);
+    out.push(ANCHOR_START);
+    out.push_str(&target);
+    out.push(ANCHOR_END);
+}
+
+fn anchor_id(el: &kuchiki::ElementData) -> Option<String> {
+    let attrs = el.attributes.borrow();
+    let id = attrs
+        .get("id")
+        .or_else(|| attrs.get("name"))
+        .or_else(|| attrs.get("xml:id"));
+    id.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
 fn span_style_codes(el: &kuchiki::ElementData) -> Vec<char> {
@@ -563,9 +714,14 @@ where
     }))
 }
 
-fn figure_block<F>(node: &NodeRef, resolve: &mut F) -> Option<Block>
+fn figure_block<F, L>(
+    node: &NodeRef,
+    ctx: &mut InlineContext<'_, L>,
+    resolve: &mut F,
+) -> Option<Block>
 where
     F: FnMut(&str) -> Option<(String, Vec<u8>)>,
+    L: FnMut(&str) -> Option<String>,
 {
     let mut src: Option<String> = None;
     let mut alt: Option<String> = None;
@@ -586,7 +742,7 @@ where
     let caption = if let Ok(mut captions) = node.select("figcaption") {
         captions
             .next()
-            .map(|cap| inline_text(cap.as_node()))
+            .map(|cap| inline_text(cap.as_node(), ctx))
             .filter(|text| !text.is_empty())
     } else {
         None
@@ -679,7 +835,10 @@ fn parse_dimension(value: Option<&str>) -> Option<u32> {
     }
 }
 
-fn table_block(node: &NodeRef) -> Option<Block> {
+fn table_block<F>(node: &NodeRef, ctx: &mut InlineContext<'_, F>) -> Option<Block>
+where
+    F: FnMut(&str) -> Option<String>,
+{
     let mut rows: Vec<String> = Vec::new();
     if let Ok(trs) = node.select("tr") {
         for tr in trs {
@@ -688,7 +847,7 @@ fn table_block(node: &NodeRef) -> Option<Block> {
                 if let Some(el) = child.as_element() {
                     let tag = el.name.local.to_lowercase();
                     if tag == "td" || tag == "th" {
-                        let cell = inline_text(&child);
+                        let cell = inline_text(&child, ctx);
                         cells.push(cell);
                     }
                 }
@@ -699,7 +858,7 @@ fn table_block(node: &NodeRef) -> Option<Block> {
         }
     }
     if rows.is_empty() {
-        let fallback = inline_text(node);
+        let fallback = inline_text(node, ctx);
         if fallback.is_empty() {
             None
         } else {
@@ -716,19 +875,22 @@ fn table_block(node: &NodeRef) -> Option<Block> {
     }
 }
 
-fn definition_list_block(node: &NodeRef) -> Option<Block> {
+fn definition_list_block<F>(node: &NodeRef, ctx: &mut InlineContext<'_, F>) -> Option<Block>
+where
+    F: FnMut(&str) -> Option<String>,
+{
     let mut items: Vec<String> = Vec::new();
     let mut current_term: Option<String> = None;
     for child in node.children() {
         if let Some(el) = child.as_element() {
             let tag = el.name.local.to_lowercase();
             if tag == "dt" {
-                let term = inline_text(&child);
+                let term = inline_text(&child, ctx);
                 if !term.is_empty() {
                     current_term = Some(term);
                 }
             } else if tag == "dd" {
-                let definition = inline_text(&child);
+                let definition = inline_text(&child, ctx);
                 if !definition.is_empty() {
                     let item = match current_term.take() {
                         Some(term) if !term.is_empty() => format!("{}: {}", term, definition),
@@ -804,6 +966,22 @@ mod tests {
         while let Some(ch) = chars.next() {
             if ch == STYLE_START || ch == STYLE_END {
                 let _ = chars.next();
+                continue;
+            }
+            if ch == LINK_START {
+                while let Some(next) = chars.next() {
+                    if next == LINK_END {
+                        break;
+                    }
+                }
+                continue;
+            }
+            if ch == ANCHOR_START {
+                while let Some(next) = chars.next() {
+                    if next == ANCHOR_END {
+                        break;
+                    }
+                }
                 continue;
             }
             out.push(ch);

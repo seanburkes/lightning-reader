@@ -121,7 +121,7 @@ fn read_opf(zip: &mut ZipArchive<File>, opf_path: &Path) -> Result<OpfResult, Re
                             href = sval.clone();
                         }
                         if key.ends_with("media-type") {
-                            media = Some(sval);
+                            media = Some(sval.clone());
                         } else if key.ends_with("properties") {
                             properties = Some(sval);
                         }
@@ -282,6 +282,13 @@ impl EpubBook {
 
     pub fn spine(&self) -> &[SpineItem] {
         &self.spine
+    }
+
+    pub fn opf_base(&self) -> PathBuf {
+        self.rootfile
+            .parent()
+            .unwrap_or(Path::new(""))
+            .to_path_buf()
     }
 
     pub fn toc_labels(&self) -> Result<std::collections::HashMap<String, String>, ReaderError> {

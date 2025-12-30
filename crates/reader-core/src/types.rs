@@ -43,15 +43,22 @@ pub struct Document {
     pub info: DocumentInfo,
     pub blocks: Vec<Block>,
     pub chapter_titles: Vec<String>,
+    pub chapter_hrefs: Vec<String>,
     pub outlines: Vec<crate::pdf::OutlineEntry>,
 }
 
 impl Document {
-    pub fn new(info: DocumentInfo, blocks: Vec<Block>, chapter_titles: Vec<String>) -> Self {
+    pub fn new(
+        info: DocumentInfo,
+        blocks: Vec<Block>,
+        chapter_titles: Vec<String>,
+        chapter_hrefs: Vec<String>,
+    ) -> Self {
         Self {
             info,
             blocks,
             chapter_titles,
+            chapter_hrefs,
             outlines: Vec::new(),
         }
     }

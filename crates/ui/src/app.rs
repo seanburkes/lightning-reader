@@ -62,6 +62,7 @@ pub struct App {
     pub search: Option<SearchView>,
     pub spritz: Option<SpritzView>,
     pub chapter_titles: Vec<String>,
+    pub chapter_hrefs: Vec<String>,
     pub outlines: Vec<reader_core::pdf::OutlineEntry>,
     pub book_title: Option<String>,
     pub author: Option<String>,
@@ -104,6 +105,7 @@ impl App {
             search: None,
             spritz: None,
             chapter_titles: Vec::new(),
+            chapter_hrefs: Vec::new(),
             outlines: Vec::new(),
             book_title: None,
             author: None,
@@ -129,6 +131,7 @@ impl App {
             search: None,
             spritz: None,
             chapter_titles: Vec::new(),
+            chapter_hrefs: Vec::new(),
             outlines: Vec::new(),
             book_title: None,
             author: None,
@@ -158,6 +161,7 @@ impl App {
             search: None,
             spritz: None,
             chapter_titles,
+            chapter_hrefs: Vec::new(),
             outlines: Vec::new(),
             book_title: None,
             author: None,
@@ -177,6 +181,7 @@ impl App {
     pub fn new_with_document(document: Document, initial_page: usize) -> Self {
         let mut app =
             Self::new_with_blocks_at(document.blocks, initial_page, document.chapter_titles);
+        app.chapter_hrefs = document.chapter_hrefs;
         app.book_title = document.info.title;
         app.author = document.info.author;
         app.book_id = Some(document.info.id);
@@ -213,12 +218,15 @@ impl App {
                 self.blocks.extend(msg.blocks);
                 self.chapter_titles
                     .push(format!("Page {}", msg.page_index + 1));
+                self.chapter_hrefs
+                    .push(format!("page:{}", msg.page_index + 1));
                 added = true;
             }
         }
         if added {
             view.reflow(&self.blocks, inner);
             view.chapter_titles = self.chapter_titles.clone();
+            view.chapter_hrefs = self.chapter_hrefs.clone();
             view.total_pages = self.total_pages;
             view.selection = None;
         }
@@ -362,7 +370,9 @@ impl App {
         let p = reader_core::layout::paginate_with_justify(&self.blocks, inner, view.justify);
         view.pages = p.pages;
         view.chapter_starts = p.chapter_starts;
+        view.anchors = p.anchors;
         view.chapter_titles = self.chapter_titles.clone();
+        view.chapter_hrefs = self.chapter_hrefs.clone();
         view.total_pages = self.total_pages;
         view.toc_overrides = self.outlines.clone();
         if let Some(idx) = self.initial_page {
@@ -967,7 +977,14 @@ fn handle_mouse_selection(
         MouseEventKind::Up(MouseButton::Left) => {
             if *selection_active {
                 if let Some(selection) = view.selection {
-                    app.copy_selection(view, selection);
+                    let (start, end) = selection.normalized();
+                    if start == end {
+                        if let Some(target) = view.link_at_point(start) {
+                            view.jump_to_target(&target);
+                        }
+                    } else {
+                        app.copy_selection(view, selection);
+                    }
                 }
                 view.selection = None;
                 *selection_anchor = None;

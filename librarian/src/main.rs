@@ -117,15 +117,59 @@ fn main() {
     }
 
     let label_map = book.toc_labels().unwrap_or_default();
-    fn book_base(_book: &EpubBook) -> std::path::PathBuf {
-        // `toc_labels` uses OPF-parent normalization internally; we cannot access it here.
-        // Use empty base to produce relative keys that match when OPF is at root.
-        std::path::Path::new("").to_path_buf()
-    }
     fn normalize_spine_href(base: &std::path::Path, href: &str) -> String {
         base.join(href.split('#').next().unwrap_or(href))
             .to_string_lossy()
             .to_string()
+    }
+    fn normalize_epub_path(path: &std::path::Path) -> std::path::PathBuf {
+        let mut out = std::path::PathBuf::new();
+        for comp in path.components() {
+            match comp {
+                std::path::Component::ParentDir => {
+                    out.pop();
+                }
+                std::path::Component::CurDir => {}
+                _ => out.push(comp.as_os_str()),
+            }
+        }
+        out
+    }
+    fn normalize_spine_href_for_links(base: &std::path::Path, href: &str) -> String {
+        let joined = base.join(href.split('#').next().unwrap_or(href));
+        normalize_epub_path(&joined).to_string_lossy().to_string()
+    }
+    fn resolve_internal_link(
+        base_root: &std::path::Path,
+        chapter_dir: &std::path::Path,
+        chapter_prefix: &str,
+        href: &str,
+    ) -> Option<String> {
+        let href = href.trim();
+        if href.is_empty() {
+            return None;
+        }
+        let mut parts = href.splitn(2, '#');
+        let path_part = parts.next().unwrap_or("");
+        let frag = parts.next();
+        let resolved_base = if path_part.is_empty() {
+            chapter_prefix.to_string()
+        } else {
+            let resolved = if path_part.starts_with('/') {
+                normalize_epub_path(&base_root.join(path_part.trim_start_matches('/')))
+            } else {
+                normalize_epub_path(&chapter_dir.join(path_part))
+            };
+            resolved.to_string_lossy().to_string()
+        };
+        let mut target = resolved_base;
+        if let Some(frag) = frag {
+            if !frag.is_empty() {
+                target.push('#');
+                target.push_str(frag);
+            }
+        }
+        Some(target)
     }
     fn is_placeholder_text(text: &str) -> bool {
         let trimmed = text.trim();
@@ -194,10 +238,11 @@ fn main() {
             s
         }
     }
-    let base = book_base(&book);
+    let base = book.opf_base();
 
     let mut blocks: Vec<reader_core::types::Block> = Vec::new();
     let mut chapter_titles: Vec<String> = Vec::new();
+    let mut chapter_hrefs: Vec<String> = Vec::new();
     let mut selected_index: Option<usize> = None;
     // Common non-content hints to skip
     let skip_hints = [
@@ -231,21 +276,33 @@ fn main() {
             Ok(s) => s,
             Err(_) => continue,
         };
-        let chapter_path = base.join(&item.href);
+        let chapter_prefix = normalize_spine_href_for_links(&base, &item.href);
+        let chapter_path = normalize_epub_path(&base.join(&item.href));
         let chapter_dir = chapter_path.parent().unwrap_or(&base).to_path_buf();
         let base_root = base.clone();
-        let mut b = reader_core::normalize::html_to_blocks_with_images(&html, |src| {
-            if src.starts_with("http://") || src.starts_with("https://") {
-                return None;
-            }
-            let resolved = if src.starts_with('/') {
-                base_root.join(src.trim_start_matches('/'))
-            } else {
-                chapter_dir.join(src)
-            };
-            let data = book.load_resource(&resolved).ok()?;
-            Some((resolved.to_string_lossy().to_string(), data))
-        });
+        let link_base_root = base_root.clone();
+        let link_chapter_dir = chapter_dir.clone();
+        let link_prefix = chapter_prefix.clone();
+        let mut b = reader_core::normalize::html_to_blocks_with_assets(
+            &html,
+            Some(chapter_prefix.as_str()),
+            |src| {
+                if src.starts_with("http://") || src.starts_with("https://") {
+                    return None;
+                }
+                let resolved = if src.starts_with('/') {
+                    base_root.join(src.trim_start_matches('/'))
+                } else {
+                    chapter_dir.join(src)
+                };
+                let resolved = normalize_epub_path(&resolved);
+                let data = book.load_resource(&resolved).ok()?;
+                Some((resolved.to_string_lossy().to_string(), data))
+            },
+            move |href| {
+                resolve_internal_link(&link_base_root, &link_chapter_dir, &link_prefix, href)
+            },
+        );
         b = reader_core::normalize::postprocess_blocks(b);
         if !has_content(&b) {
             continue;
@@ -260,6 +317,7 @@ fn main() {
         }
         blocks.append(&mut b);
         chapter_titles.push(title);
+        chapter_hrefs.push(chapter_prefix);
         if selected_index.is_none() {
             selected_index = Some(idx);
         }
@@ -272,21 +330,33 @@ fn main() {
                 .unwrap_or(true)
         }) {
             let html = book.load_chapter(item).unwrap_or_default();
-            let chapter_path = base.join(&item.href);
+            let chapter_prefix = normalize_spine_href_for_links(&base, &item.href);
+            let chapter_path = normalize_epub_path(&base.join(&item.href));
             let chapter_dir = chapter_path.parent().unwrap_or(&base).to_path_buf();
             let base_root = base.clone();
-            let mut b = reader_core::normalize::html_to_blocks_with_images(&html, |src| {
-                if src.starts_with("http://") || src.starts_with("https://") {
-                    return None;
-                }
-                let resolved = if src.starts_with('/') {
-                    base_root.join(src.trim_start_matches('/'))
-                } else {
-                    chapter_dir.join(src)
-                };
-                let data = book.load_resource(&resolved).ok()?;
-                Some((resolved.to_string_lossy().to_string(), data))
-            });
+            let link_base_root = base_root.clone();
+            let link_chapter_dir = chapter_dir.clone();
+            let link_prefix = chapter_prefix.clone();
+            let mut b = reader_core::normalize::html_to_blocks_with_assets(
+                &html,
+                Some(chapter_prefix.as_str()),
+                |src| {
+                    if src.starts_with("http://") || src.starts_with("https://") {
+                        return None;
+                    }
+                    let resolved = if src.starts_with('/') {
+                        base_root.join(src.trim_start_matches('/'))
+                    } else {
+                        chapter_dir.join(src)
+                    };
+                    let resolved = normalize_epub_path(&resolved);
+                    let data = book.load_resource(&resolved).ok()?;
+                    Some((resolved.to_string_lossy().to_string(), data))
+                },
+                move |href| {
+                    resolve_internal_link(&link_base_root, &link_chapter_dir, &link_prefix, href)
+                },
+            );
             b = reader_core::normalize::postprocess_blocks(b);
             blocks = b;
             let key = normalize_spine_href(&base, &item.href);
@@ -296,12 +366,13 @@ fn main() {
                 .or_else(|| heading_title(&blocks))
                 .unwrap_or_else(|| fallback_title(&item.href));
             chapter_titles.push(title);
+            chapter_hrefs.push(chapter_prefix);
             selected_index = Some(idx);
         }
     }
     let selected_index = selected_index.unwrap_or(0);
 
-    let document = Document::new(document_info, blocks, chapter_titles);
+    let document = Document::new(document_info, blocks, chapter_titles, chapter_hrefs);
     run_reader(document, book_id, selected_index);
 }
 
@@ -342,6 +413,7 @@ fn stream_pdf(
     });
     let mut blocks: Vec<reader_core::types::Block> = Vec::new();
     let mut chapter_titles: Vec<String> = Vec::new();
+    let mut chapter_hrefs: Vec<String> = Vec::new();
     for (idx, page_blocks) in loader.load_range(0, initial)? {
         if idx > 0 {
             blocks.push(reader_core::types::Block::Paragraph(String::new()));
@@ -350,6 +422,7 @@ fn stream_pdf(
         }
         blocks.extend(page_blocks);
         chapter_titles.push(format!("Page {}", idx + 1));
+        chapter_hrefs.push(format!("page:{}", idx + 1));
     }
 
     let (tx, rx) = channel();
@@ -402,7 +475,7 @@ fn stream_pdf(
         format: DocumentFormat::Pdf,
     };
     let info = DocumentInfo::from_book_id(&book_id, summary.author.clone());
-    let document = Document::new(info, blocks, chapter_titles);
+    let document = Document::new(info, blocks, chapter_titles, chapter_hrefs);
     let truncated = target_pages < total_pages_actual;
     Ok((
         document,
