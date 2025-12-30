@@ -43,6 +43,7 @@ impl TextFile {
             blocks,
             vec![title],
             vec![self.path.to_string_lossy().into_owned()],
+            Vec::new(),
         )
     }
 }

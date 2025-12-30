@@ -301,6 +301,15 @@ impl EpubBook {
         )
     }
 
+    pub fn toc_entries(&self) -> Result<Vec<crate::types::TocEntry>, ReaderError> {
+        crate::nav::read_nav_entries_from_archive_with_hints(
+            &self.zip,
+            &self.rootfile,
+            self.nav_href.as_deref(),
+            self.ncx_href.as_deref(),
+        )
+    }
+
     pub fn load_chapter(&self, item: &SpineItem) -> Result<String, ReaderError> {
         // Chapter path relative to OPF base
         let base = self.rootfile.parent().unwrap_or(Path::new(""));

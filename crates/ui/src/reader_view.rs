@@ -799,6 +799,10 @@ impl ReaderView {
         None
     }
 
+    pub fn page_for_href(&self, href: &str) -> Option<usize> {
+        self.resolve_target_page(href)
+    }
+
     pub fn jump_to_target(&mut self, target: &str) -> bool {
         let Some(mut page) = self.resolve_target_page(target) else {
             return false;

@@ -44,6 +44,7 @@ pub struct Document {
     pub blocks: Vec<Block>,
     pub chapter_titles: Vec<String>,
     pub chapter_hrefs: Vec<String>,
+    pub toc_entries: Vec<TocEntry>,
     pub outlines: Vec<crate::pdf::OutlineEntry>,
 }
 
@@ -53,12 +54,14 @@ impl Document {
         blocks: Vec<Block>,
         chapter_titles: Vec<String>,
         chapter_hrefs: Vec<String>,
+        toc_entries: Vec<TocEntry>,
     ) -> Self {
         Self {
             info,
             blocks,
             chapter_titles,
             chapter_hrefs,
+            toc_entries,
             outlines: Vec::new(),
         }
     }
@@ -82,6 +85,13 @@ pub struct ImageBlock {
     pub caption: Option<String>,
     pub width: Option<u32>,
     pub height: Option<u32>,
+}
+
+#[derive(Clone)]
+pub struct TocEntry {
+    pub href: String,
+    pub label: String,
+    pub level: usize,
 }
 
 #[derive(Clone, Copy)]

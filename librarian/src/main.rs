@@ -117,6 +117,7 @@ fn main() {
     }
 
     let label_map = book.toc_labels().unwrap_or_default();
+    let toc_entries = book.toc_entries().unwrap_or_default();
     fn normalize_spine_href(base: &std::path::Path, href: &str) -> String {
         base.join(href.split('#').next().unwrap_or(href))
             .to_string_lossy()
@@ -372,7 +373,13 @@ fn main() {
     }
     let selected_index = selected_index.unwrap_or(0);
 
-    let document = Document::new(document_info, blocks, chapter_titles, chapter_hrefs);
+    let document = Document::new(
+        document_info,
+        blocks,
+        chapter_titles,
+        chapter_hrefs,
+        toc_entries,
+    );
     run_reader(document, book_id, selected_index);
 }
 
@@ -475,7 +482,7 @@ fn stream_pdf(
         format: DocumentFormat::Pdf,
     };
     let info = DocumentInfo::from_book_id(&book_id, summary.author.clone());
-    let document = Document::new(info, blocks, chapter_titles, chapter_hrefs);
+    let document = Document::new(info, blocks, chapter_titles, chapter_hrefs, Vec::new());
     let truncated = target_pages < total_pages_actual;
     Ok((
         document,

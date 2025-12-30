@@ -2,18 +2,19 @@ use ratatui::{prelude::*, widgets::*};
 use unicode_segmentation::UnicodeSegmentation;
 
 pub struct TocView {
-    pub items: Vec<String>,
+    pub items: Vec<TocItem>,
     pub selected: usize,
-    pub page_map: Vec<usize>,
+}
+
+pub struct TocItem {
+    pub label: String,
+    pub level: usize,
+    pub page: Option<usize>,
 }
 
 impl TocView {
-    pub fn new(items: Vec<String>, page_map: Vec<usize>) -> Self {
-        Self {
-            items,
-            selected: 0,
-            page_map,
-        }
+    pub fn new(items: Vec<TocItem>) -> Self {
+        Self { items, selected: 0 }
     }
 
     pub fn up(&mut self) {
@@ -26,7 +27,7 @@ impl TocView {
     }
 
     pub fn current_page(&self) -> Option<usize> {
-        self.page_map.get(self.selected).cloned()
+        self.items.get(self.selected).and_then(|item| item.page)
     }
 
     pub fn render(&self, f: &mut Frame<'_>, area: Rect, column_width: u16) {
@@ -53,20 +54,16 @@ impl TocView {
             .items
             .iter()
             .enumerate()
-            .map(|(i, s)| {
+            .map(|(i, item)| {
                 let style = if i == self.selected {
                     Style::default().bg(Color::Blue).fg(Color::White)
                 } else {
                     Style::default()
                 };
-                let mut label = s.clone();
-                if label.graphemes(true).count() > max_w {
-                    // Keep last graphemes to show differentiating numbers if any
-                    let keep = max_w.saturating_sub(1);
-                    let gs: Vec<&str> = label.graphemes(true).collect();
-                    let start = gs.len().saturating_sub(keep);
-                    label = format!("…{}", gs[start..].concat());
-                }
+                let indent = "  ".repeat(item.level.min(6));
+                let mut label = format!("{}{}", indent, item.label);
+                let page_text = item.page.map(|p| format!("p{}", p + 1));
+                label = format_toc_line(&label, page_text.as_deref(), max_w);
                 ListItem::new(Line::from(label)).style(style)
             })
             .collect();
@@ -78,4 +75,38 @@ impl TocView {
         let status = Paragraph::new(Line::from("TOC: Enter to jump, Esc to return"));
         f.render_widget(status, vchunks[1]);
     }
+}
+
+fn format_toc_line(label: &str, page_text: Option<&str>, max_w: usize) -> String {
+    if max_w == 0 {
+        return String::new();
+    }
+    let page_text = page_text.unwrap_or("");
+    let needs_page = !page_text.is_empty();
+    let page_len = page_text.graphemes(true).count();
+    let space = if needs_page { 1 } else { 0 };
+    let max_label = max_w.saturating_sub(page_len + space);
+    let mut trimmed = truncate_with_ellipsis(label, max_label);
+    if needs_page {
+        if !trimmed.is_empty() {
+            trimmed.push(' ');
+        }
+        trimmed.push_str(page_text);
+    }
+    trimmed
+}
+
+fn truncate_with_ellipsis(text: &str, max_w: usize) -> String {
+    if max_w == 0 {
+        return String::new();
+    }
+    let gs: Vec<&str> = text.graphemes(true).collect();
+    if gs.len() <= max_w {
+        return text.to_string();
+    }
+    if max_w == 1 {
+        return "…".to_string();
+    }
+    let keep = max_w.saturating_sub(1);
+    format!("{}…", gs[..keep].concat())
 }

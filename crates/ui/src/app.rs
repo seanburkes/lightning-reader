@@ -20,7 +20,7 @@ use ratatui::{
     prelude::*,
     widgets::{Block as UiBlock, Borders, Clear, Paragraph, Wrap},
 };
-use reader_core::types::{Block as ReaderBlock, Document};
+use reader_core::types::{Block as ReaderBlock, Document, TocEntry};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
@@ -28,7 +28,7 @@ use crate::{
     reader_view::{ReaderView, SelectionPoint, SelectionRange},
     search_view::SearchView,
     spritz_view::SpritzView,
-    views::TocView,
+    views::{TocItem, TocView},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -63,6 +63,7 @@ pub struct App {
     pub spritz: Option<SpritzView>,
     pub chapter_titles: Vec<String>,
     pub chapter_hrefs: Vec<String>,
+    pub toc_entries: Vec<TocEntry>,
     pub outlines: Vec<reader_core::pdf::OutlineEntry>,
     pub book_title: Option<String>,
     pub author: Option<String>,
@@ -106,6 +107,7 @@ impl App {
             spritz: None,
             chapter_titles: Vec::new(),
             chapter_hrefs: Vec::new(),
+            toc_entries: Vec::new(),
             outlines: Vec::new(),
             book_title: None,
             author: None,
@@ -132,6 +134,7 @@ impl App {
             spritz: None,
             chapter_titles: Vec::new(),
             chapter_hrefs: Vec::new(),
+            toc_entries: Vec::new(),
             outlines: Vec::new(),
             book_title: None,
             author: None,
@@ -162,6 +165,7 @@ impl App {
             spritz: None,
             chapter_titles,
             chapter_hrefs: Vec::new(),
+            toc_entries: Vec::new(),
             outlines: Vec::new(),
             book_title: None,
             author: None,
@@ -182,6 +186,7 @@ impl App {
         let mut app =
             Self::new_with_blocks_at(document.blocks, initial_page, document.chapter_titles);
         app.chapter_hrefs = document.chapter_hrefs;
+        app.toc_entries = document.toc_entries;
         app.book_title = document.info.title;
         app.author = document.info.author;
         app.book_id = Some(document.info.id);
@@ -256,21 +261,38 @@ impl App {
         });
     }
 
-    fn build_toc_items(&self, view: &ReaderView) -> (Vec<String>, Vec<usize>) {
+    fn build_toc_items(&self, view: &ReaderView) -> Vec<TocItem> {
         if !self.outlines.is_empty() {
             let mut items = Vec::new();
-            let mut pages = Vec::new();
             for entry in &self.outlines {
-                items.push(entry.title.clone());
-                pages.push(entry.page_index);
+                items.push(TocItem {
+                    label: entry.title.clone(),
+                    level: 0,
+                    page: Some(entry.page_index),
+                });
             }
-            return (items, pages);
+            return items;
+        }
+        if !self.toc_entries.is_empty() {
+            let mut items = Vec::new();
+            for entry in &self.toc_entries {
+                let page = view.page_for_href(&entry.href);
+                items.push(TocItem {
+                    label: entry.label.clone(),
+                    level: entry.level,
+                    page,
+                });
+            }
+            return items;
         }
         if view.chapter_starts.is_empty() {
-            return (vec!["Start".to_string()], vec![0]);
+            return vec![TocItem {
+                label: "Start".to_string(),
+                level: 0,
+                page: Some(0),
+            }];
         }
-        let mut items: Vec<String> = Vec::new();
-        let mut pages: Vec<usize> = Vec::new();
+        let mut items: Vec<TocItem> = Vec::new();
         for (i, pidx) in view.chapter_starts.iter().enumerate() {
             let title = view.chapter_title(i);
             let chapter_label = format!("Chapter {}", i + 1);
@@ -281,10 +303,13 @@ impl App {
             } else {
                 format!("{}: {}", chapter_label, title)
             };
-            items.push(format!("{}  (page {})", entry, pidx + 1));
-            pages.push(*pidx);
+            items.push(TocItem {
+                label: entry,
+                level: 0,
+                page: Some(*pidx),
+            });
         }
-        (items, pages)
+        items
     }
 
     fn mouse_selection_point(
@@ -643,10 +668,18 @@ impl App {
                                     self.search = Some(search);
                                 }
                                 KeyCode::Char('t') => {
-                                    let (items, page_map) = self.build_toc_items(&view);
-                                    let mut toc = TocView::new(items, page_map);
-                                    if let Some(idx) =
-                                        toc.page_map.iter().rposition(|p| *p <= view.current)
+                                    let items = self.build_toc_items(&view);
+                                    let mut toc = TocView::new(items);
+                                    if let Some(idx) = toc
+                                        .items
+                                        .iter()
+                                        .enumerate()
+                                        .rev()
+                                        .find_map(|(i, item)| {
+                                            item.page
+                                                .filter(|p| *p <= view.current)
+                                                .map(|_| i)
+                                        })
                                     {
                                         toc.selected = idx;
                                     }
