@@ -24,7 +24,7 @@ pub struct HighlightLine {
     pub spans: Vec<HighlightSpan>,
 }
 
-static SYNTAXES: Lazy<SyntaxSet> = Lazy::new(|| SyntaxSet::load_defaults_newlines());
+static SYNTAXES: Lazy<SyntaxSet> = Lazy::new(SyntaxSet::load_defaults_newlines);
 static THEMES: Lazy<ThemeSet> = Lazy::new(ThemeSet::load_defaults);
 static THEME: Lazy<Theme> = Lazy::new(|| {
     THEMES
