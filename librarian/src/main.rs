@@ -188,13 +188,6 @@ impl EpubChapterLoader {
         }
     }
 
-    fn estimate_total(&self) -> usize {
-        self.spine
-            .iter()
-            .filter(|item| self.is_candidate_item(item))
-            .count()
-    }
-
     fn next_chapter(&mut self) -> Option<IncomingChapter> {
         while self.next_spine < self.spine.len() {
             let idx = self.next_spine;
@@ -359,7 +352,7 @@ fn main() {
         .unwrap_or(2);
 
     match stream_epub_lazy(path, initial_chapters, format) {
-        Ok((document, book_id, rx, prefetch_tx, total_chapters)) => {
+        Ok((document, book_id, rx, prefetch_tx, total_chapters, chapter_index_by_href)) => {
             run_reader_chapter_streaming(
                 document,
                 book_id,
@@ -368,6 +361,7 @@ fn main() {
                 prefetch_tx,
                 total_chapters,
                 prefetch_window,
+                chapter_index_by_href,
             );
             return;
         }
@@ -376,7 +370,7 @@ fn main() {
             initial_chapters,
             DocumentFormat::Epub3,
         ) {
-            Ok((document, book_id, rx, prefetch_tx, total_chapters)) => {
+            Ok((document, book_id, rx, prefetch_tx, total_chapters, chapter_index_by_href)) => {
                 run_reader_chapter_streaming(
                     document,
                     book_id,
@@ -385,6 +379,7 @@ fn main() {
                     prefetch_tx,
                     total_chapters,
                     prefetch_window,
+                    chapter_index_by_href,
                 );
                 return;
             }
@@ -407,6 +402,7 @@ fn stream_epub_lazy(
         Receiver<IncomingChapter>,
         Sender<ChapterPrefetchRequest>,
         Option<usize>,
+        std::collections::HashMap<String, usize>,
     ),
     reader_core::epub::ReaderError,
 > {
@@ -430,10 +426,18 @@ fn stream_epub_lazy(
     let label_map = book.toc_labels().unwrap_or_default();
     let toc_entries = book.toc_entries().unwrap_or_default();
     let mut loader = EpubChapterLoader::new(book, label_map);
-    let total_chapters = {
-        let estimate = loader.estimate_total();
-        (estimate > 0).then_some(estimate)
-    };
+    let mut chapter_index_by_href: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    let mut chapter_idx = 0usize;
+    for item in loader.spine.iter() {
+        if !loader.is_candidate_item(item) {
+            continue;
+        }
+        let href = normalize_spine_href_for_links(&loader.base, &item.href);
+        chapter_index_by_href.insert(strip_fragment(&href).to_string(), chapter_idx);
+        chapter_idx += 1;
+    }
+    let total_chapters = (chapter_idx > 0).then_some(chapter_idx);
 
     let mut blocks: Vec<reader_core::types::Block> = Vec::new();
     let mut chapter_titles: Vec<String> = Vec::new();
@@ -508,7 +512,14 @@ fn stream_epub_lazy(
         });
     }
 
-    Ok((document, book_id, rx, prefetch_tx, total_chapters))
+    Ok((
+        document,
+        book_id,
+        rx,
+        prefetch_tx,
+        total_chapters,
+        chapter_index_by_href,
+    ))
 }
 
 fn stream_pdf(
@@ -664,6 +675,7 @@ fn run_reader_chapter_streaming(
     prefetch_tx: Sender<ChapterPrefetchRequest>,
     total_chapters: Option<usize>,
     prefetch_window: usize,
+    chapter_index_by_href: std::collections::HashMap<String, usize>,
 ) {
     // Load last location and update initial spine index
     let mut last = load_state(&book_id)
@@ -681,6 +693,7 @@ fn run_reader_chapter_streaming(
         total_chapters,
         prefetch_tx,
         prefetch_window,
+        chapter_index_by_href,
     );
     apply_theme_config(&mut app);
 

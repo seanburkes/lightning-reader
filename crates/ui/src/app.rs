@@ -1,5 +1,6 @@
 use chrono::Utc;
 use std::{
+    collections::HashMap,
     fs,
     io::stdout,
     path::PathBuf,
@@ -84,6 +85,7 @@ pub struct App {
     pub prefetch_chapter_window: usize,
     pub last_chapter_prefetch_at: Option<usize>,
     pub pending_chapter_jump: Option<String>,
+    pub chapter_index_by_href: HashMap<String, usize>,
     pub clipboard: Option<Clipboard>,
 }
 
@@ -147,6 +149,7 @@ impl App {
             prefetch_chapter_window: 2,
             last_chapter_prefetch_at: None,
             pending_chapter_jump: None,
+            chapter_index_by_href: HashMap::new(),
             clipboard: None,
         }
     }
@@ -181,6 +184,7 @@ impl App {
             prefetch_chapter_window: 2,
             last_chapter_prefetch_at: None,
             pending_chapter_jump: None,
+            chapter_index_by_href: HashMap::new(),
             clipboard: None,
         }
     }
@@ -219,6 +223,7 @@ impl App {
             prefetch_chapter_window: 2,
             last_chapter_prefetch_at: None,
             pending_chapter_jump: None,
+            chapter_index_by_href: HashMap::new(),
             clipboard: None,
         }
     }
@@ -261,12 +266,14 @@ impl App {
         total_chapters: Option<usize>,
         prefetch_tx: Sender<ChapterPrefetchRequest>,
         prefetch_window: usize,
+        chapter_index_by_href: HashMap<String, usize>,
     ) -> Self {
         let mut app = Self::new_with_document(document, initial_page);
         app.incoming_chapters = Some(incoming_chapters);
         app.total_chapters = total_chapters;
         app.prefetch_chapter_tx = Some(prefetch_tx);
         app.prefetch_chapter_window = prefetch_window;
+        app.chapter_index_by_href = chapter_index_by_href;
         app
     }
 
@@ -384,6 +391,14 @@ impl App {
             target_loaded,
             target_href: None,
         });
+    }
+
+    fn chapter_index_for_href(&self, href: &str) -> Option<usize> {
+        if let Some(idx) = self.chapter_index_by_href.get(href) {
+            return Some(*idx);
+        }
+        let stripped = strip_fragment(href);
+        self.chapter_index_by_href.get(stripped).copied()
     }
 
     fn build_toc_items(&self, view: &ReaderView) -> Vec<TocItem> {
@@ -794,20 +809,24 @@ impl App {
                                                             Some(href.to_string());
                                                         if let Some(tx) = &self.prefetch_chapter_tx
                                                         {
-                                                            let _ = tx.send(
-                                                                ChapterPrefetchRequest {
-                                                                    target_loaded: self
-                                                                        .chapter_titles
+                                                            let target_loaded = self
+                                                                .chapter_index_for_href(href)
+                                                                .map(|idx| idx.saturating_add(1))
+                                                                .unwrap_or_else(|| {
+                                                                    self.chapter_titles
                                                                         .len()
                                                                         .saturating_add(
                                                                             self.prefetch_chapter_window
                                                                                 .max(1),
-                                                                        ),
+                                                                        )
+                                                                });
+                                                            let _ =
+                                                                tx.send(ChapterPrefetchRequest {
+                                                                    target_loaded,
                                                                     target_href: Some(
                                                                         href.to_string(),
                                                                     ),
-                                                                },
-                                                            );
+                                                                });
                                                         }
                                                     }
                                                 }
@@ -1156,6 +1175,10 @@ impl App {
         }
         Ok(view.current)
     }
+}
+
+fn strip_fragment(href: &str) -> &str {
+    href.split('#').next().unwrap_or(href)
 }
 
 fn handle_mouse_selection(
