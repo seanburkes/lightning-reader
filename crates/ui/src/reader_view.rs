@@ -799,6 +799,21 @@ impl ReaderView {
         None
     }
 
+    pub fn link_label_at_point(&self, point: SelectionPoint) -> Option<String> {
+        let page = self.pages.get(point.page)?;
+        let line = page.lines.get(point.line)?;
+        let mut offset = 0usize;
+        for seg in &line.segments {
+            let seg_text = Self::segment_display_text(seg);
+            let seg_len = seg_text.graphemes(true).count();
+            if point.col < offset + seg_len {
+                return Some(seg_text.into_owned());
+            }
+            offset += seg_len;
+        }
+        None
+    }
+
     pub fn page_for_href(&self, href: &str) -> Option<usize> {
         self.resolve_target_page(href)
     }

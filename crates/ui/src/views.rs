@@ -1,6 +1,8 @@
 use ratatui::{prelude::*, widgets::*};
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::layout::centered_rect;
+
 pub struct TocView {
     pub items: Vec<TocItem>,
     pub selected: usize,
@@ -74,6 +76,28 @@ impl TocView {
         // Status bar (reuse lower chunk)
         let status = Paragraph::new(Line::from("TOC: Enter to jump, Esc to return"));
         f.render_widget(status, vchunks[1]);
+    }
+}
+
+pub struct FootnoteView {
+    pub text: String,
+}
+
+impl FootnoteView {
+    pub fn new(text: String) -> Self {
+        Self { text }
+    }
+
+    pub fn render(&self, f: &mut Frame<'_>, area: Rect) {
+        let popup_area = centered_rect(70, 50, area);
+        let block = Block::default()
+            .title("Footnote (Esc to close)")
+            .borders(Borders::ALL);
+        let body = Paragraph::new(self.text.clone())
+            .block(block)
+            .wrap(Wrap { trim: false });
+        f.render_widget(Clear, popup_area);
+        f.render_widget(body, popup_area);
     }
 }
 
