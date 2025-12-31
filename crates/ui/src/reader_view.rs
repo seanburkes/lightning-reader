@@ -296,14 +296,13 @@ impl ReaderView {
         let loaded = self.pages.len();
         let total = self.total_pages.unwrap_or(loaded).max(loaded);
         let current = if loaded == 0 { 0 } else { self.current + 1 };
-        let mut left = self
-            .chapter_status_text()
-            .or_else(|| {
-                self.current_chapter_index()
-                    .map(|idx| self.chapter_label(idx))
-            })
-            .unwrap_or_default();
+        let mut left = self.chapter_left_label().unwrap_or_default();
         let mut right = format!("Pg {}/{}", current, total);
+        if let Some(idx) = self.current_chapter_index() {
+            if let Some(percent) = self.chapter_percent(idx) {
+                right.push_str(&format!(" · {}%", percent));
+            }
+        }
         let total_width = body_width;
         // Reserve one space padding around segments if present
         let mut header_line = Line::default();
@@ -783,14 +782,14 @@ impl ReaderView {
         }
     }
 
-    fn chapter_status_text(&self) -> Option<String> {
+    fn chapter_left_label(&self) -> Option<String> {
         let idx = self.current_chapter_index()?;
-        let total = self.chapter_total()?;
         let label = self.chapter_label(idx);
         let mut parts = Vec::new();
-        parts.push(format!("Chapter {}/{}", idx + 1, total));
-        if let Some(percent) = self.chapter_percent(idx) {
-            parts.push(format!("{}%", percent));
+        if let Some(total) = self.chapter_total() {
+            parts.push(format!("Chapter {}/{}", idx + 1, total));
+        } else {
+            parts.push(format!("Chapter {}", idx + 1));
         }
         let default_label = format!("Chapter {}", idx + 1);
         if !label.is_empty() && label != default_label {
