@@ -163,6 +163,7 @@ pub enum Block {
     Code { lang: Option<String>, text: String },
     Quote(String),
     Image(ImageBlock),
+    Table(TableBlock),
 }
 
 #[derive(Clone)]
@@ -173,6 +174,17 @@ pub struct ImageBlock {
     pub caption: Option<String>,
     pub width: Option<u32>,
     pub height: Option<u32>,
+}
+
+#[derive(Clone)]
+pub struct TableCell {
+    pub text: String,
+    pub is_header: bool,
+}
+
+#[derive(Clone)]
+pub struct TableBlock {
+    pub rows: Vec<Vec<TableCell>>,
 }
 
 #[derive(Clone)]

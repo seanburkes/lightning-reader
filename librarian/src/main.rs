@@ -207,6 +207,10 @@ fn main() {
                         .map(|t| !t.trim().is_empty())
                         .unwrap_or(false)
             }
+            reader_core::types::Block::Table(table) => table
+                .rows
+                .iter()
+                .any(|row| row.iter().any(|cell| !cell.text.trim().is_empty())),
         })
     }
     fn heading_title(blocks: &[reader_core::types::Block]) -> Option<String> {

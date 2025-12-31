@@ -1,4 +1,4 @@
-use crate::types::{Block, ImageBlock};
+use crate::types::{Block, ImageBlock, TableBlock, TableCell};
 use kuchiki::{traits::*, NodeRef};
 
 pub fn html_to_blocks(html: &str) -> Vec<Block> {
@@ -842,21 +842,28 @@ fn table_block<F>(node: &NodeRef, ctx: &mut InlineContext<'_, F>) -> Option<Bloc
 where
     F: FnMut(&str) -> Option<String>,
 {
-    let mut rows: Vec<String> = Vec::new();
+    let mut rows: Vec<Vec<TableCell>> = Vec::new();
     if let Ok(trs) = node.select("tr") {
         for tr in trs {
-            let mut cells: Vec<String> = Vec::new();
+            let mut cells: Vec<TableCell> = Vec::new();
+            let mut has_text = false;
             for child in tr.as_node().children() {
                 if let Some(el) = child.as_element() {
                     let tag = el.name.local.to_lowercase();
                     if tag == "td" || tag == "th" {
                         let cell = inline_text(&child, ctx);
-                        cells.push(cell);
+                        if !cell.trim().is_empty() {
+                            has_text = true;
+                        }
+                        cells.push(TableCell {
+                            text: cell,
+                            is_header: tag == "th",
+                        });
                     }
                 }
             }
-            if !cells.is_empty() {
-                rows.push(cells.join(" | "));
+            if !cells.is_empty() && has_text {
+                rows.push(cells);
             }
         }
     }
@@ -865,16 +872,10 @@ where
         if fallback.is_empty() {
             None
         } else {
-            Some(Block::Code {
-                lang: None,
-                text: fallback,
-            })
+            Some(Block::Paragraph(fallback))
         }
     } else {
-        Some(Block::Code {
-            lang: None,
-            text: rows.join("\n"),
-        })
+        Some(Block::Table(TableBlock { rows }))
     }
 }
 
@@ -949,6 +950,13 @@ pub fn postprocess_blocks(mut blocks: Vec<Block>) -> Vec<Block> {
                 }
                 if let Some(alt) = img.alt.as_mut() {
                     *alt = clean_text(alt, false);
+                }
+            }
+            Block::Table(ref mut table) => {
+                for row in &mut table.rows {
+                    for cell in row {
+                        cell.text = clean_text(&cell.text, true);
+                    }
                 }
             }
             _ => {}
@@ -1032,7 +1040,7 @@ mod tests {
     }
 
     #[test]
-    fn extracts_tables_as_code_blocks() {
+    fn extracts_tables_as_table_blocks() {
         let html = r#"
         <table>
           <tr><th>Head</th><th>Value</th></tr>
@@ -1040,10 +1048,15 @@ mod tests {
         </table>
         "#;
         let blocks = html_to_blocks(html);
-        assert!(matches!(
-            blocks[0],
-            Block::Code { ref text, .. } if text == "Head | Value\nA | B"
-        ));
+        let Block::Table(table) = &blocks[0] else {
+            panic!("expected table block");
+        };
+        assert_eq!(table.rows.len(), 2);
+        assert_eq!(table.rows[0].len(), 2);
+        assert_eq!(table.rows[0][0].text, "Head");
+        assert_eq!(table.rows[0][1].text, "Value");
+        assert_eq!(table.rows[1][0].text, "A");
+        assert_eq!(table.rows[1][1].text, "B");
     }
 
     #[test]
