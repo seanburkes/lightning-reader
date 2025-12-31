@@ -1,7 +1,7 @@
 use std::{
     collections::{HashSet, VecDeque},
     env,
-    path::Path,
+    path::{Path, PathBuf},
     sync::mpsc::{channel, Receiver, Sender},
     thread,
     time::Duration,
@@ -13,7 +13,266 @@ use reader_core::{
     state::{load_state, save_state},
     types::{AppStateRecord, BookId, Document, DocumentFormat, DocumentInfo, Location},
 };
-use ui::app::{IncomingPage, PrefetchRequest};
+use ui::app::{ChapterPrefetchRequest, IncomingChapter, IncomingPage, PrefetchRequest};
+
+const SKIP_HINTS: [&str; 10] = [
+    "cover",
+    "nav",
+    "toc",
+    "title",
+    "front",
+    "copyright",
+    "acknowledg",
+    "glossary",
+    "colophon",
+    "dedication",
+];
+
+fn normalize_spine_href(base: &Path, href: &str) -> String {
+    base.join(href.split('#').next().unwrap_or(href))
+        .to_string_lossy()
+        .to_string()
+}
+
+fn normalize_epub_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            _ => out.push(comp.as_os_str()),
+        }
+    }
+    out
+}
+
+fn normalize_spine_href_for_links(base: &Path, href: &str) -> String {
+    let joined = base.join(href.split('#').next().unwrap_or(href));
+    normalize_epub_path(&joined).to_string_lossy().to_string()
+}
+
+fn resolve_internal_link(
+    base_root: &Path,
+    chapter_dir: &Path,
+    chapter_prefix: &str,
+    href: &str,
+) -> Option<String> {
+    let href = href.trim();
+    if href.is_empty() {
+        return None;
+    }
+    let mut parts = href.splitn(2, '#');
+    let path_part = parts.next().unwrap_or("");
+    let frag = parts.next();
+    let resolved_base = if path_part.is_empty() {
+        chapter_prefix.to_string()
+    } else {
+        let resolved = if path_part.starts_with('/') {
+            normalize_epub_path(&base_root.join(path_part.trim_start_matches('/')))
+        } else {
+            normalize_epub_path(&chapter_dir.join(path_part))
+        };
+        resolved.to_string_lossy().to_string()
+    };
+    let mut target = resolved_base;
+    if let Some(frag) = frag {
+        if !frag.is_empty() {
+            target.push('#');
+            target.push_str(frag);
+        }
+    }
+    Some(target)
+}
+
+fn is_placeholder_text(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed == "───"
+        || trimmed == "[math]"
+        || trimmed == "[svg]"
+        || trimmed == "[image]"
+        || trimmed.starts_with("[image:")
+}
+
+fn has_content(blocks: &[reader_core::types::Block]) -> bool {
+    blocks.iter().any(|blk| match blk {
+        reader_core::types::Block::Paragraph(t)
+        | reader_core::types::Block::Heading(t, _)
+        | reader_core::types::Block::Quote(t) => {
+            let trimmed = t.trim();
+            !trimmed.is_empty() && !is_placeholder_text(trimmed)
+        }
+        reader_core::types::Block::List(items) => items.iter().any(|item| {
+            let trimmed = item.trim();
+            !trimmed.is_empty() && !is_placeholder_text(trimmed)
+        }),
+        reader_core::types::Block::Code { text, .. } => !text.trim().is_empty(),
+        reader_core::types::Block::Image(image) => {
+            image.data.as_ref().map(|d| !d.is_empty()).unwrap_or(false)
+                || image
+                    .caption
+                    .as_ref()
+                    .map(|t| !t.trim().is_empty())
+                    .unwrap_or(false)
+                || image
+                    .alt
+                    .as_ref()
+                    .map(|t| !t.trim().is_empty())
+                    .unwrap_or(false)
+        }
+        reader_core::types::Block::Table(table) => table
+            .rows
+            .iter()
+            .any(|row| row.iter().any(|cell| !cell.text.trim().is_empty())),
+    })
+}
+
+fn heading_title(blocks: &[reader_core::types::Block]) -> Option<String> {
+    blocks.iter().find_map(|blk| match blk {
+        reader_core::types::Block::Heading(t, _) => {
+            let trimmed = t.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        _ => None,
+    })
+}
+
+fn fallback_title(href: &str) -> String {
+    let name = std::path::Path::new(href)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("chapter");
+    let mut s = name.replace(['_', '-', '.', '%'], " ");
+    s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let s = s
+        .trim()
+        .trim_start_matches(|c: char| c.is_ascii_digit())
+        .trim()
+        .to_string();
+    if s.is_empty() {
+        "Chapter".to_string()
+    } else {
+        s
+    }
+}
+
+fn strip_fragment(href: &str) -> &str {
+    href.split('#').next().unwrap_or(href)
+}
+
+struct EpubChapterLoader {
+    book: EpubBook,
+    spine: Vec<reader_core::epub::SpineItem>,
+    label_map: std::collections::HashMap<String, String>,
+    base: PathBuf,
+    next_spine: usize,
+    loaded: usize,
+}
+
+impl EpubChapterLoader {
+    fn new(book: EpubBook, label_map: std::collections::HashMap<String, String>) -> Self {
+        let spine = book.spine().to_vec();
+        let base = book.opf_base();
+        Self {
+            book,
+            spine,
+            label_map,
+            base,
+            next_spine: 0,
+            loaded: 0,
+        }
+    }
+
+    fn estimate_total(&self) -> usize {
+        self.spine
+            .iter()
+            .filter(|item| self.is_candidate_item(item))
+            .count()
+    }
+
+    fn next_chapter(&mut self) -> Option<IncomingChapter> {
+        while self.next_spine < self.spine.len() {
+            let idx = self.next_spine;
+            self.next_spine += 1;
+            let item = &self.spine[idx];
+            if !self.is_candidate_item(item) {
+                continue;
+            }
+            let key = normalize_spine_href(&self.base, &item.href);
+            let label = self.label_map.get(&key).cloned();
+            let html = match self.book.load_chapter(item) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let chapter_prefix = normalize_spine_href_for_links(&self.base, &item.href);
+            let chapter_path = normalize_epub_path(&self.base.join(&item.href));
+            let chapter_dir = chapter_path.parent().unwrap_or(&self.base).to_path_buf();
+            let base_root = self.base.clone();
+            let link_base_root = base_root.clone();
+            let link_chapter_dir = chapter_dir.clone();
+            let link_prefix = chapter_prefix.clone();
+            let mut blocks = reader_core::normalize::html_to_blocks_with_assets(
+                &html,
+                Some(chapter_prefix.as_str()),
+                |src| {
+                    if src.starts_with("http://") || src.starts_with("https://") {
+                        return None;
+                    }
+                    let resolved = if src.starts_with('/') {
+                        base_root.join(src.trim_start_matches('/'))
+                    } else {
+                        chapter_dir.join(src)
+                    };
+                    let resolved = normalize_epub_path(&resolved);
+                    let data = self.book.load_resource(&resolved).ok()?;
+                    Some((resolved.to_string_lossy().to_string(), data))
+                },
+                move |href| {
+                    resolve_internal_link(&link_base_root, &link_chapter_dir, &link_prefix, href)
+                },
+            );
+            blocks = reader_core::normalize::postprocess_blocks(blocks);
+            if !has_content(&blocks) {
+                continue;
+            }
+            let title = label
+                .or_else(|| heading_title(&blocks))
+                .unwrap_or_else(|| fallback_title(&item.href));
+            let chapter_index = self.loaded;
+            self.loaded += 1;
+            return Some(IncomingChapter {
+                chapter_index,
+                blocks,
+                title,
+                href: chapter_prefix,
+            });
+        }
+        None
+    }
+
+    fn is_candidate_item(&self, item: &reader_core::epub::SpineItem) -> bool {
+        let href = item.href.to_ascii_lowercase();
+        let mt_is_xhtml = item
+            .media_type
+            .as_deref()
+            .map(|mt| mt.contains("xhtml") || mt.contains("html"))
+            .unwrap_or(true);
+        if !mt_is_xhtml || href.contains("nav") || href.contains("toc") {
+            return false;
+        }
+        let key = normalize_spine_href(&self.base, &item.href);
+        let label = self.label_map.get(&key);
+        if label.is_none() && SKIP_HINTS.iter().any(|h| href.contains(h)) {
+            return false;
+        }
+        true
+    }
+}
 
 fn main() {
     // Accept optional EPUB/PDF/TXT/MD path: default to docs/alice.epub
@@ -89,18 +348,69 @@ fn main() {
         }
     }
 
-    // Open EPUB and compute BookId (placeholder id = path sha256-like)
-    let path = std::path::Path::new(&input_path);
-    let book = match EpubBook::open(path) {
-        Ok(b) => b,
-        Err(_) => match EpubBook::open(Path::new("docs/alice.epub")) {
-            Ok(b) => b,
+    let path = Path::new(&input_path);
+    let initial_chapters = env::var("LIBRARIAN_EPUB_INITIAL_CHAPTERS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(1);
+    let prefetch_window = env::var("LIBRARIAN_EPUB_PREFETCH_CHAPTERS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(2);
+
+    match stream_epub_lazy(path, initial_chapters, format) {
+        Ok((document, book_id, rx, prefetch_tx, total_chapters)) => {
+            run_reader_chapter_streaming(
+                document,
+                book_id,
+                0,
+                rx,
+                prefetch_tx,
+                total_chapters,
+                prefetch_window,
+            );
+            return;
+        }
+        Err(_) => match stream_epub_lazy(
+            Path::new("docs/alice.epub"),
+            initial_chapters,
+            DocumentFormat::Epub3,
+        ) {
+            Ok((document, book_id, rx, prefetch_tx, total_chapters)) => {
+                run_reader_chapter_streaming(
+                    document,
+                    book_id,
+                    0,
+                    rx,
+                    prefetch_tx,
+                    total_chapters,
+                    prefetch_window,
+                );
+                return;
+            }
             Err(e) => {
                 eprintln!("Failed to open file: {}", e);
                 return;
             }
         },
-    };
+    }
+}
+
+fn stream_epub_lazy(
+    path: &Path,
+    initial_chapters: usize,
+    format: DocumentFormat,
+) -> Result<
+    (
+        Document,
+        BookId,
+        Receiver<IncomingChapter>,
+        Sender<ChapterPrefetchRequest>,
+        Option<usize>,
+    ),
+    reader_core::epub::ReaderError,
+> {
+    let book = EpubBook::open(path)?;
     let book_id = BookId {
         id: format!("path:{}", path.display()),
         path: path.display().to_string(),
@@ -119,264 +429,31 @@ fn main() {
 
     let label_map = book.toc_labels().unwrap_or_default();
     let toc_entries = book.toc_entries().unwrap_or_default();
-    fn normalize_spine_href(base: &std::path::Path, href: &str) -> String {
-        base.join(href.split('#').next().unwrap_or(href))
-            .to_string_lossy()
-            .to_string()
-    }
-    fn normalize_epub_path(path: &std::path::Path) -> std::path::PathBuf {
-        let mut out = std::path::PathBuf::new();
-        for comp in path.components() {
-            match comp {
-                std::path::Component::ParentDir => {
-                    out.pop();
-                }
-                std::path::Component::CurDir => {}
-                _ => out.push(comp.as_os_str()),
-            }
-        }
-        out
-    }
-    fn normalize_spine_href_for_links(base: &std::path::Path, href: &str) -> String {
-        let joined = base.join(href.split('#').next().unwrap_or(href));
-        normalize_epub_path(&joined).to_string_lossy().to_string()
-    }
-    fn resolve_internal_link(
-        base_root: &std::path::Path,
-        chapter_dir: &std::path::Path,
-        chapter_prefix: &str,
-        href: &str,
-    ) -> Option<String> {
-        let href = href.trim();
-        if href.is_empty() {
-            return None;
-        }
-        let mut parts = href.splitn(2, '#');
-        let path_part = parts.next().unwrap_or("");
-        let frag = parts.next();
-        let resolved_base = if path_part.is_empty() {
-            chapter_prefix.to_string()
-        } else {
-            let resolved = if path_part.starts_with('/') {
-                normalize_epub_path(&base_root.join(path_part.trim_start_matches('/')))
-            } else {
-                normalize_epub_path(&chapter_dir.join(path_part))
-            };
-            resolved.to_string_lossy().to_string()
-        };
-        let mut target = resolved_base;
-        if let Some(frag) = frag {
-            if !frag.is_empty() {
-                target.push('#');
-                target.push_str(frag);
-            }
-        }
-        Some(target)
-    }
-    fn is_placeholder_text(text: &str) -> bool {
-        let trimmed = text.trim();
-        trimmed == "───"
-            || trimmed == "[math]"
-            || trimmed == "[svg]"
-            || trimmed == "[image]"
-            || trimmed.starts_with("[image:")
-    }
-    fn has_content(blocks: &[reader_core::types::Block]) -> bool {
-        blocks.iter().any(|blk| match blk {
-            reader_core::types::Block::Paragraph(t)
-            | reader_core::types::Block::Heading(t, _)
-            | reader_core::types::Block::Quote(t) => {
-                let trimmed = t.trim();
-                !trimmed.is_empty() && !is_placeholder_text(trimmed)
-            }
-            reader_core::types::Block::List(items) => items.iter().any(|item| {
-                let trimmed = item.trim();
-                !trimmed.is_empty() && !is_placeholder_text(trimmed)
-            }),
-            reader_core::types::Block::Code { text, .. } => !text.trim().is_empty(),
-            reader_core::types::Block::Image(image) => {
-                image.data.as_ref().map(|d| !d.is_empty()).unwrap_or(false)
-                    || image
-                        .caption
-                        .as_ref()
-                        .map(|t| !t.trim().is_empty())
-                        .unwrap_or(false)
-                    || image
-                        .alt
-                        .as_ref()
-                        .map(|t| !t.trim().is_empty())
-                        .unwrap_or(false)
-            }
-            reader_core::types::Block::Table(table) => table
-                .rows
-                .iter()
-                .any(|row| row.iter().any(|cell| !cell.text.trim().is_empty())),
-        })
-    }
-    fn heading_title(blocks: &[reader_core::types::Block]) -> Option<String> {
-        blocks.iter().find_map(|blk| match blk {
-            reader_core::types::Block::Heading(t, _) => {
-                let trimmed = t.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed.to_string())
-                }
-            }
-            _ => None,
-        })
-    }
-    fn fallback_title(href: &str) -> String {
-        let name = std::path::Path::new(href)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("chapter");
-        let mut s = name.replace(['_', '-', '.', '%'], " ");
-        s = s.split_whitespace().collect::<Vec<_>>().join(" ");
-        let s = s
-            .trim()
-            .trim_start_matches(|c: char| c.is_ascii_digit())
-            .trim()
-            .to_string();
-        if s.is_empty() {
-            "Chapter".to_string()
-        } else {
-            s
-        }
-    }
-    let base = book.opf_base();
+    let mut loader = EpubChapterLoader::new(book, label_map);
+    let total_chapters = {
+        let estimate = loader.estimate_total();
+        (estimate > 0).then_some(estimate)
+    };
 
     let mut blocks: Vec<reader_core::types::Block> = Vec::new();
     let mut chapter_titles: Vec<String> = Vec::new();
     let mut chapter_hrefs: Vec<String> = Vec::new();
-    let mut selected_index: Option<usize> = None;
-    // Common non-content hints to skip
-    let skip_hints = [
-        "cover",
-        "nav",
-        "toc",
-        "title",
-        "front",
-        "copyright",
-        "acknowledg",
-        "glossary",
-        "colophon",
-        "dedication",
-    ];
-    for (idx, item) in book.spine().iter().enumerate() {
-        let href = item.href.to_lowercase();
-        let mt_is_xhtml = item
-            .media_type
-            .as_deref()
-            .map(|mt| mt.contains("xhtml") || mt.contains("html"))
-            .unwrap_or(true);
-        if !mt_is_xhtml || href.contains("nav") || href.contains("toc") {
-            continue;
-        }
-        let key = normalize_spine_href(&base, &item.href);
-        let label = label_map.get(&key).cloned();
-        if label.is_none() && skip_hints.iter().any(|h| href.contains(h)) {
-            continue;
-        }
-        let html = match book.load_chapter(item) {
-            Ok(s) => s,
-            Err(_) => continue,
+    let mut loaded = 0usize;
+    let initial = initial_chapters.max(1);
+    for _ in 0..initial {
+        let Some(chapter) = loader.next_chapter() else {
+            break;
         };
-        let chapter_prefix = normalize_spine_href_for_links(&base, &item.href);
-        let chapter_path = normalize_epub_path(&base.join(&item.href));
-        let chapter_dir = chapter_path.parent().unwrap_or(&base).to_path_buf();
-        let base_root = base.clone();
-        let link_base_root = base_root.clone();
-        let link_chapter_dir = chapter_dir.clone();
-        let link_prefix = chapter_prefix.clone();
-        let mut b = reader_core::normalize::html_to_blocks_with_assets(
-            &html,
-            Some(chapter_prefix.as_str()),
-            |src| {
-                if src.starts_with("http://") || src.starts_with("https://") {
-                    return None;
-                }
-                let resolved = if src.starts_with('/') {
-                    base_root.join(src.trim_start_matches('/'))
-                } else {
-                    chapter_dir.join(src)
-                };
-                let resolved = normalize_epub_path(&resolved);
-                let data = book.load_resource(&resolved).ok()?;
-                Some((resolved.to_string_lossy().to_string(), data))
-            },
-            move |href| {
-                resolve_internal_link(&link_base_root, &link_chapter_dir, &link_prefix, href)
-            },
-        );
-        b = reader_core::normalize::postprocess_blocks(b);
-        if !has_content(&b) {
-            continue;
-        }
-        let title = label
-            .or_else(|| heading_title(&b))
-            .unwrap_or_else(|| fallback_title(&item.href));
         if !blocks.is_empty() {
             blocks.push(reader_core::types::Block::Paragraph(String::new()));
             blocks.push(reader_core::types::Block::Paragraph("───".into()));
             blocks.push(reader_core::types::Block::Paragraph(String::new()));
         }
-        blocks.append(&mut b);
-        chapter_titles.push(title);
-        chapter_hrefs.push(chapter_prefix);
-        if selected_index.is_none() {
-            selected_index = Some(idx);
-        }
+        blocks.extend(chapter.blocks);
+        chapter_titles.push(chapter.title);
+        chapter_hrefs.push(chapter.href);
+        loaded += 1;
     }
-    if blocks.is_empty() {
-        if let Some((idx, item)) = book.spine().iter().enumerate().find(|(_, item)| {
-            item.media_type
-                .as_deref()
-                .map(|mt| mt.contains("xhtml") || mt.contains("html"))
-                .unwrap_or(true)
-        }) {
-            let html = book.load_chapter(item).unwrap_or_default();
-            let chapter_prefix = normalize_spine_href_for_links(&base, &item.href);
-            let chapter_path = normalize_epub_path(&base.join(&item.href));
-            let chapter_dir = chapter_path.parent().unwrap_or(&base).to_path_buf();
-            let base_root = base.clone();
-            let link_base_root = base_root.clone();
-            let link_chapter_dir = chapter_dir.clone();
-            let link_prefix = chapter_prefix.clone();
-            let mut b = reader_core::normalize::html_to_blocks_with_assets(
-                &html,
-                Some(chapter_prefix.as_str()),
-                |src| {
-                    if src.starts_with("http://") || src.starts_with("https://") {
-                        return None;
-                    }
-                    let resolved = if src.starts_with('/') {
-                        base_root.join(src.trim_start_matches('/'))
-                    } else {
-                        chapter_dir.join(src)
-                    };
-                    let resolved = normalize_epub_path(&resolved);
-                    let data = book.load_resource(&resolved).ok()?;
-                    Some((resolved.to_string_lossy().to_string(), data))
-                },
-                move |href| {
-                    resolve_internal_link(&link_base_root, &link_chapter_dir, &link_prefix, href)
-                },
-            );
-            b = reader_core::normalize::postprocess_blocks(b);
-            blocks = b;
-            let key = normalize_spine_href(&base, &item.href);
-            let title = label_map
-                .get(&key)
-                .cloned()
-                .or_else(|| heading_title(&blocks))
-                .unwrap_or_else(|| fallback_title(&item.href));
-            chapter_titles.push(title);
-            chapter_hrefs.push(chapter_prefix);
-            selected_index = Some(idx);
-        }
-    }
-    let selected_index = selected_index.unwrap_or(0);
 
     let document = Document::new(
         document_info,
@@ -385,7 +462,53 @@ fn main() {
         chapter_hrefs,
         toc_entries,
     );
-    run_reader(document, book_id, selected_index);
+
+    let (tx, rx) = channel();
+    let (prefetch_tx, prefetch_rx) = channel::<ChapterPrefetchRequest>();
+    if loaded < loader.spine.len() {
+        thread::spawn(move || {
+            let mut pending_loaded = loaded;
+            let mut pending_href: Option<String> = None;
+            let mut loaded_count = loaded;
+            loop {
+                while let Ok(req) = prefetch_rx.try_recv() {
+                    pending_loaded = pending_loaded.max(req.target_loaded);
+                    if let Some(href) = req.target_href {
+                        pending_href = Some(href);
+                    }
+                }
+                let mut progressed = false;
+                while loaded_count < pending_loaded || pending_href.is_some() {
+                    let Some(chapter) = loader.next_chapter() else {
+                        pending_href = None;
+                        break;
+                    };
+                    loaded_count = chapter.chapter_index.saturating_add(1);
+                    if let Some(target) = pending_href.as_deref() {
+                        if strip_fragment(target) == strip_fragment(&chapter.href) {
+                            pending_href = None;
+                        }
+                    }
+                    if tx.send(chapter).is_err() {
+                        return;
+                    }
+                    progressed = true;
+                }
+                if !progressed {
+                    if pending_loaded == loaded_count && pending_href.is_none() {
+                        if prefetch_rx
+                            .recv_timeout(Duration::from_millis(200))
+                            .is_err()
+                        {
+                            continue;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    Ok((document, book_id, rx, prefetch_tx, total_chapters))
 }
 
 fn stream_pdf(
@@ -531,6 +654,56 @@ fn run_reader(document: Document, book_id: BookId, selected_index: usize) {
     let _ = save_state(&rec);
 
     eprintln!("Run with: cargo run -p librarian [path_to_epub|path_to_txt|path_to_md]  # default docs/alice.epub");
+}
+
+fn run_reader_chapter_streaming(
+    document: Document,
+    book_id: BookId,
+    selected_index: usize,
+    incoming: Receiver<IncomingChapter>,
+    prefetch_tx: Sender<ChapterPrefetchRequest>,
+    total_chapters: Option<usize>,
+    prefetch_window: usize,
+) {
+    // Load last location and update initial spine index
+    let mut last = load_state(&book_id)
+        .map(|r| r.last_location)
+        .unwrap_or(Location {
+            spine_index: 0,
+            offset: 0,
+        });
+    last.spine_index = selected_index;
+
+    let mut app = ui::app::App::new_with_document_chapter_streaming(
+        document,
+        last.offset,
+        incoming,
+        total_chapters,
+        prefetch_tx,
+        prefetch_window,
+    );
+    apply_theme_config(&mut app);
+
+    let current_idx = match app.run() {
+        Ok(idx) => idx,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            0
+        }
+    };
+
+    // Save last location using current page index
+    last.offset = current_idx;
+    let rec = AppStateRecord {
+        book: book_id,
+        last_location: last,
+        bookmarks: vec![],
+    };
+    let _ = save_state(&rec);
+
+    eprintln!(
+        "Run with: cargo run -p librarian [path_to_epub|path_to_txt|path_to_md]  # default docs/alice.epub"
+    );
 }
 
 fn run_reader_streaming(

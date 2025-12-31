@@ -75,6 +75,7 @@ pub struct ReaderView {
     pub author: Option<String>,
     pub theme: Theme,
     pub total_pages: Option<usize>,
+    pub total_chapters: Option<usize>,
     pub toc_overrides: Vec<reader_core::pdf::OutlineEntry>,
     pub selection: Option<SelectionRange>,
     pub image_map: HashMap<String, Arc<Vec<u8>>>,
@@ -137,6 +138,7 @@ impl ReaderView {
             author: None,
             theme: Theme::default(),
             total_pages: None,
+            total_chapters: None,
             toc_overrides: Vec::new(),
             selection: None,
             image_map: HashMap::new(),
@@ -789,7 +791,7 @@ impl ReaderView {
         if let Some(total) = self.chapter_total() {
             parts.push(format!("Chapter {}/{}", idx + 1, total));
         } else {
-            parts.push(format!("Chapter {}", idx + 1));
+            parts.push(format!("Chapter {}/?", idx + 1));
         }
         let default_label = format!("Chapter {}", idx + 1);
         if !label.is_empty() && label != default_label {
@@ -799,6 +801,11 @@ impl ReaderView {
     }
 
     fn chapter_total(&self) -> Option<usize> {
+        if let Some(total) = self.total_chapters {
+            if total > 0 {
+                return Some(total);
+            }
+        }
         let total = self.chapter_starts.len();
         if total == 0 {
             return None;

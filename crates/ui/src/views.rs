@@ -12,6 +12,7 @@ pub struct TocItem {
     pub label: String,
     pub level: usize,
     pub page: Option<usize>,
+    pub href: Option<String>,
 }
 
 impl TocView {
@@ -30,6 +31,10 @@ impl TocView {
 
     pub fn current_page(&self) -> Option<usize> {
         self.items.get(self.selected).and_then(|item| item.page)
+    }
+
+    pub fn current_item(&self) -> Option<&TocItem> {
+        self.items.get(self.selected)
     }
 
     pub fn render(&self, f: &mut Frame<'_>, area: Rect, column_width: u16) {

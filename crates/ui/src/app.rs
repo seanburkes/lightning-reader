@@ -78,6 +78,12 @@ pub struct App {
     pub prefetch_tx: Option<Sender<PrefetchRequest>>,
     pub prefetch_window: usize,
     pub last_prefetch_at: Option<usize>,
+    pub incoming_chapters: Option<Receiver<IncomingChapter>>,
+    pub total_chapters: Option<usize>,
+    pub prefetch_chapter_tx: Option<Sender<ChapterPrefetchRequest>>,
+    pub prefetch_chapter_window: usize,
+    pub last_chapter_prefetch_at: Option<usize>,
+    pub pending_chapter_jump: Option<String>,
     pub clipboard: Option<Clipboard>,
 }
 
@@ -89,6 +95,18 @@ pub struct IncomingPage {
 pub struct PrefetchRequest {
     pub start: usize,
     pub window: usize,
+}
+
+pub struct IncomingChapter {
+    pub chapter_index: usize,
+    pub blocks: Vec<ReaderBlock>,
+    pub title: String,
+    pub href: String,
+}
+
+pub struct ChapterPrefetchRequest {
+    pub target_loaded: usize,
+    pub target_href: Option<String>,
 }
 
 impl Default for App {
@@ -123,6 +141,12 @@ impl App {
             prefetch_tx: None,
             prefetch_window: 2,
             last_prefetch_at: None,
+            incoming_chapters: None,
+            total_chapters: None,
+            prefetch_chapter_tx: None,
+            prefetch_chapter_window: 2,
+            last_chapter_prefetch_at: None,
+            pending_chapter_jump: None,
             clipboard: None,
         }
     }
@@ -151,6 +175,12 @@ impl App {
             prefetch_tx: None,
             prefetch_window: 2,
             last_prefetch_at: None,
+            incoming_chapters: None,
+            total_chapters: None,
+            prefetch_chapter_tx: None,
+            prefetch_chapter_window: 2,
+            last_chapter_prefetch_at: None,
+            pending_chapter_jump: None,
             clipboard: None,
         }
     }
@@ -183,6 +213,12 @@ impl App {
             prefetch_tx: None,
             prefetch_window: 2,
             last_prefetch_at: None,
+            incoming_chapters: None,
+            total_chapters: None,
+            prefetch_chapter_tx: None,
+            prefetch_chapter_window: 2,
+            last_chapter_prefetch_at: None,
+            pending_chapter_jump: None,
             clipboard: None,
         }
     }
@@ -195,6 +231,9 @@ impl App {
         app.author = document.info.author;
         app.book_id = Some(document.info.id);
         app.outlines = document.outlines;
+        if !app.chapter_titles.is_empty() {
+            app.total_chapters = Some(app.chapter_titles.len());
+        }
         app
     }
 
@@ -211,6 +250,23 @@ impl App {
         app.total_pages = Some(total_pages);
         app.prefetch_tx = Some(prefetch_tx);
         app.prefetch_window = prefetch_window;
+        app.total_chapters = None;
+        app
+    }
+
+    pub fn new_with_document_chapter_streaming(
+        document: Document,
+        initial_page: usize,
+        incoming_chapters: Receiver<IncomingChapter>,
+        total_chapters: Option<usize>,
+        prefetch_tx: Sender<ChapterPrefetchRequest>,
+        prefetch_window: usize,
+    ) -> Self {
+        let mut app = Self::new_with_document(document, initial_page);
+        app.incoming_chapters = Some(incoming_chapters);
+        app.total_chapters = total_chapters;
+        app.prefetch_chapter_tx = Some(prefetch_tx);
+        app.prefetch_chapter_window = prefetch_window;
         app
     }
 
@@ -237,7 +293,39 @@ impl App {
             view.chapter_titles = self.chapter_titles.clone();
             view.chapter_hrefs = self.chapter_hrefs.clone();
             view.total_pages = self.total_pages;
+            view.total_chapters = self.total_chapters;
             view.selection = None;
+        }
+    }
+
+    fn poll_incoming_chapters(&mut self, view: &mut ReaderView, inner: reader_core::layout::Size) {
+        let mut added = false;
+        if let Some(rx) = &self.incoming_chapters {
+            while let Ok(msg) = rx.try_recv() {
+                view.add_images_from_blocks(&msg.blocks);
+                if !self.blocks.is_empty() {
+                    self.blocks.push(ReaderBlock::Paragraph(String::new()));
+                    self.blocks.push(ReaderBlock::Paragraph("───".into()));
+                    self.blocks.push(ReaderBlock::Paragraph(String::new()));
+                }
+                self.blocks.extend(msg.blocks);
+                self.chapter_titles.push(msg.title);
+                self.chapter_hrefs.push(msg.href);
+                added = true;
+            }
+        }
+        if added {
+            view.reflow(&self.blocks, inner);
+            view.chapter_titles = self.chapter_titles.clone();
+            view.chapter_hrefs = self.chapter_hrefs.clone();
+            view.total_pages = self.total_pages;
+            view.total_chapters = self.total_chapters;
+            view.selection = None;
+        }
+        if let Some(target) = self.pending_chapter_jump.clone() {
+            if view.jump_to_target(&target) {
+                self.pending_chapter_jump = None;
+            }
         }
     }
 
@@ -265,6 +353,39 @@ impl App {
         });
     }
 
+    fn maybe_request_chapter_prefetch(&mut self, view: &ReaderView) {
+        let Some(tx) = &self.prefetch_chapter_tx else {
+            return;
+        };
+        let loaded = self.chapter_titles.len();
+        if loaded == 0 {
+            return;
+        }
+        let page_count = view.pages.len();
+        if page_count == 0 {
+            return;
+        }
+        if let Some(total) = self.total_chapters {
+            if loaded >= total {
+                return;
+            }
+        }
+        let current = view.current;
+        if self.last_chapter_prefetch_at == Some(current) {
+            return;
+        }
+        let remaining = page_count.saturating_sub(current + 1);
+        if remaining > 2 {
+            return;
+        }
+        self.last_chapter_prefetch_at = Some(current);
+        let target_loaded = loaded.saturating_add(self.prefetch_chapter_window.max(1));
+        let _ = tx.send(ChapterPrefetchRequest {
+            target_loaded,
+            target_href: None,
+        });
+    }
+
     fn build_toc_items(&self, view: &ReaderView) -> Vec<TocItem> {
         if !self.outlines.is_empty() {
             let mut items = Vec::new();
@@ -273,6 +394,7 @@ impl App {
                     label: entry.title.clone(),
                     level: 0,
                     page: Some(entry.page_index),
+                    href: None,
                 });
             }
             return items;
@@ -285,6 +407,7 @@ impl App {
                     label: entry.label.clone(),
                     level: entry.level,
                     page,
+                    href: Some(entry.href.clone()),
                 });
             }
             return items;
@@ -294,6 +417,7 @@ impl App {
                 label: "Start".to_string(),
                 level: 0,
                 page: Some(0),
+                href: None,
             }];
         }
         let mut items: Vec<TocItem> = Vec::new();
@@ -311,6 +435,7 @@ impl App {
                 label: entry,
                 level: 0,
                 page: Some(*pidx),
+                href: None,
             });
         }
         items
@@ -422,6 +547,7 @@ impl App {
         view.chapter_titles = self.chapter_titles.clone();
         view.chapter_hrefs = self.chapter_hrefs.clone();
         view.total_pages = self.total_pages;
+        view.total_chapters = self.total_chapters;
         view.toc_overrides = self.outlines.clone();
         if let Some(idx) = self.initial_page {
             view.current = idx.min(view.pages.len().saturating_sub(1));
@@ -437,7 +563,9 @@ impl App {
                 height = size.height.saturating_sub(2);
                 let inner = ReaderView::inner_size(size, width, view.two_pane);
                 self.poll_incoming(&mut view, inner);
+                self.poll_incoming_chapters(&mut view, inner);
                 self.maybe_request_prefetch(&view);
+                self.maybe_request_chapter_prefetch(&view);
                 view.reflow(&self.blocks, inner);
                 view.render(f, size, width, self.last_search.as_deref());
             });
@@ -468,7 +596,9 @@ impl App {
                 // Respect configured column width; do not override with terminal width
                 let inner = ReaderView::inner_size(size, width, view.two_pane);
                 self.poll_incoming(&mut view, inner);
+                self.poll_incoming_chapters(&mut view, inner);
                 self.maybe_request_prefetch(&view);
+                self.maybe_request_chapter_prefetch(&view);
                 if (inner.width, inner.height) != last_inner {
                     view.reflow(&self.blocks, inner);
                     // Clamp current page if needed
@@ -654,9 +784,33 @@ impl App {
                                 KeyCode::Enter => {
                                     if let Mode::Toc = self.mode {
                                         if let Some(t) = &self.toc {
-                                            if let Some(target) = t.current_page() {
-                                                view.current =
-                                                    target.min(view.pages.len().saturating_sub(1));
+                                            if let Some(item) = t.current_item() {
+                                                if let Some(target) = item.page {
+                                                    view.current = target
+                                                        .min(view.pages.len().saturating_sub(1));
+                                                } else if let Some(href) = item.href.as_deref() {
+                                                    if !view.jump_to_target(href) {
+                                                        self.pending_chapter_jump =
+                                                            Some(href.to_string());
+                                                        if let Some(tx) = &self.prefetch_chapter_tx
+                                                        {
+                                                            let _ = tx.send(
+                                                                ChapterPrefetchRequest {
+                                                                    target_loaded: self
+                                                                        .chapter_titles
+                                                                        .len()
+                                                                        .saturating_add(
+                                                                            self.prefetch_chapter_window
+                                                                                .max(1),
+                                                                        ),
+                                                                    target_href: Some(
+                                                                        href.to_string(),
+                                                                    ),
+                                                                },
+                                                            );
+                                                        }
+                                                    }
+                                                }
                                             }
                                             self.mode = Mode::Reader;
                                             self.toc = None;
