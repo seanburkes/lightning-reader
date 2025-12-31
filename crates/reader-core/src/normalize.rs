@@ -127,13 +127,75 @@ where
         FImg: FnMut(&str) -> Option<(String, Vec<u8>)>,
         FLink: FnMut(&str) -> Option<String>,
     {
+        fn flush_pending(pending: &mut String, out: &mut Vec<Block>) {
+            if pending.trim().is_empty() {
+                pending.clear();
+                return;
+            }
+            let text = normalize_inline_text(pending);
+            pending.clear();
+            if !text.is_empty() {
+                out.push(Block::Paragraph(text));
+            }
+        }
+
+        fn is_inline_tag(tag: &str) -> bool {
+            matches!(
+                tag,
+                "a" | "abbr"
+                    | "b"
+                    | "br"
+                    | "cite"
+                    | "code"
+                    | "del"
+                    | "em"
+                    | "i"
+                    | "kbd"
+                    | "mark"
+                    | "q"
+                    | "s"
+                    | "samp"
+                    | "small"
+                    | "span"
+                    | "strike"
+                    | "strong"
+                    | "sub"
+                    | "sup"
+                    | "u"
+            )
+        }
+
+        fn is_skippable_tag(tag: &str) -> bool {
+            matches!(
+                tag,
+                "head" | "meta" | "link" | "script" | "style" | "noscript"
+            )
+        }
+
+        let mut pending = String::new();
         for child in node.children() {
             if let Some(block) = extract_block(&child, ctx, resolve_image) {
+                flush_pending(&mut pending, out);
                 out.push(block);
                 continue;
             }
+            if let Some(el) = child.as_element() {
+                let tag = el.name.local.to_lowercase();
+                if is_skippable_tag(&tag) {
+                    continue;
+                }
+                if is_inline_tag(&tag) {
+                    append_inline_text(&child, &mut pending, ctx);
+                    continue;
+                }
+            } else if child.as_text().is_some() {
+                append_inline_text(&child, &mut pending, ctx);
+                continue;
+            }
+            flush_pending(&mut pending, out);
             collect(&child, out, ctx, resolve_image);
         }
+        flush_pending(&mut pending, out);
     }
 
     let mut ctx = InlineContext {
@@ -1067,6 +1129,16 @@ mod tests {
             blocks[0],
             Block::Paragraph(ref t) if t == "Line one\nLine two"
         ));
+    }
+
+    #[test]
+    fn captures_orphan_text_outside_blocks() {
+        let html = r#"<div>Loose <em>text</em> without closing"#;
+        let blocks = html_to_blocks(html);
+        let Block::Paragraph(text) = &blocks[0] else {
+            panic!("expected paragraph");
+        };
+        assert_eq!(strip_inline_markers(text), "Loose text without closing");
     }
 
     #[test]
