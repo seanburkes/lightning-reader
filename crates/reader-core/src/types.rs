@@ -17,22 +17,110 @@ fn default_format() -> DocumentFormat {
     DocumentFormat::Text
 }
 
+#[derive(Clone, Debug)]
+pub enum TitleKind {
+    Main,
+    Subtitle,
+    Short,
+    Expanded,
+    Unspecified,
+    Other(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct TitleEntry {
+    pub text: String,
+    pub kind: TitleKind,
+}
+
+#[derive(Clone, Debug)]
+pub struct CreatorEntry {
+    pub name: String,
+    pub roles: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SeriesInfo {
+    pub name: String,
+    pub index: Option<f32>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct BookMetadata {
+    pub titles: Vec<TitleEntry>,
+    pub creators: Vec<CreatorEntry>,
+    pub series: Option<SeriesInfo>,
+}
+
+impl BookMetadata {
+    pub fn main_title(&self) -> Option<String> {
+        self.titles
+            .iter()
+            .find(|t| matches!(t.kind, TitleKind::Main))
+            .or_else(|| self.titles.first())
+            .map(|t| t.text.clone())
+    }
+
+    pub fn subtitle(&self) -> Option<String> {
+        self.titles
+            .iter()
+            .find(|t| matches!(t.kind, TitleKind::Subtitle))
+            .map(|t| t.text.clone())
+    }
+
+    pub fn author_string(&self) -> Option<String> {
+        let mut authors: Vec<String> = self
+            .creators
+            .iter()
+            .filter(|c| {
+                if c.roles.is_empty() {
+                    return true;
+                }
+                c.roles.iter().any(|role| is_author_role(role))
+            })
+            .map(|c| c.name.clone())
+            .collect();
+        if authors.is_empty() {
+            authors = self.creators.iter().map(|c| c.name.clone()).collect();
+        }
+        if authors.is_empty() {
+            None
+        } else {
+            Some(authors.join(", "))
+        }
+    }
+}
+
+fn is_author_role(role: &str) -> bool {
+    let lower = role.to_ascii_lowercase();
+    lower == "aut" || lower.contains("author")
+}
+
 #[derive(Clone)]
 pub struct DocumentInfo {
     pub id: String,
     pub path: String,
     pub title: Option<String>,
+    pub subtitle: Option<String>,
     pub author: Option<String>,
+    pub metadata: Option<BookMetadata>,
     pub format: DocumentFormat,
 }
 
 impl DocumentInfo {
-    pub fn from_book_id(book: &BookId, author: Option<String>) -> Self {
+    pub fn from_book_id(
+        book: &BookId,
+        author: Option<String>,
+        metadata: Option<BookMetadata>,
+    ) -> Self {
+        let subtitle = metadata.as_ref().and_then(|m| m.subtitle());
         Self {
             id: book.id.clone(),
             path: book.path.clone(),
             title: book.title.clone(),
+            subtitle,
             author,
+            metadata,
             format: book.format,
         }
     }

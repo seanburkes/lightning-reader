@@ -35,7 +35,9 @@ impl TextFile {
             id: format!("path:{}", path_str),
             path: path_str,
             title: Some(title.clone()),
+            subtitle: None,
             author: None,
+            metadata: None,
             format,
         };
         Document::new(

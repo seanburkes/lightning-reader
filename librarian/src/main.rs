@@ -107,7 +107,8 @@ fn main() {
         title: book.title.clone(),
         format,
     };
-    let document_info = DocumentInfo::from_book_id(&book_id, book.author.clone());
+    let document_info =
+        DocumentInfo::from_book_id(&book_id, book.author.clone(), Some(book.metadata.clone()));
 
     // Debug: print spine length and first hrefs
     eprintln!("Title: {:?}", book.title);
@@ -481,7 +482,7 @@ fn stream_pdf(
         title,
         format: DocumentFormat::Pdf,
     };
-    let info = DocumentInfo::from_book_id(&book_id, summary.author.clone());
+    let info = DocumentInfo::from_book_id(&book_id, summary.author.clone(), None);
     let document = Document::new(info, blocks, chapter_titles, chapter_hrefs, Vec::new());
     let truncated = target_pages < total_pages_actual;
     Ok((
