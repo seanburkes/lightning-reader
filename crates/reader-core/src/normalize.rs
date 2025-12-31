@@ -608,6 +608,9 @@ fn normalize_line(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut last_space = false;
     for ch in s.chars() {
+        if ch == '\u{00AD}' {
+            continue;
+        }
         if ch.is_whitespace() {
             if !last_space {
                 out.push(' ');
@@ -1051,6 +1054,12 @@ mod tests {
             blocks[0],
             Block::Paragraph(ref t) if t == "Line one\nLine two"
         ));
+    }
+
+    #[test]
+    fn removes_soft_hyphens_in_flow() {
+        let input = "co\u{00AD}operate re-enter";
+        assert_eq!(normalize_line(input), "cooperate re-enter");
     }
 
     #[test]
