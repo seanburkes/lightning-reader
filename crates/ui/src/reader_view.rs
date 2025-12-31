@@ -292,18 +292,17 @@ impl ReaderView {
             .split(centered);
         let body_width = header_footer_chunks[1].width as usize;
 
-        // Header: chapter title (left) | page X/Y (right)
+        // Header: chapter status (left) | page X/Y (right)
         let loaded = self.pages.len();
         let total = self.total_pages.unwrap_or(loaded).max(loaded);
         let current = if loaded == 0 { 0 } else { self.current + 1 };
-        let chapter_label = self
-            .chapter_starts
-            .iter()
-            .rposition(|&p| p <= self.current)
-            .map(|idx| self.chapter_label(idx))
-            .unwrap_or_else(|| "".to_string());
-        // Build powerline-style header segments: left chapter, right page
-        let mut left = chapter_label;
+        let mut left = self
+            .chapter_status_text()
+            .or_else(|| {
+                self.current_chapter_index()
+                    .map(|idx| self.chapter_label(idx))
+            })
+            .unwrap_or_default();
         let mut right = format!("Pg {}/{}", current, total);
         let total_width = body_width;
         // Reserve one space padding around segments if present
@@ -782,6 +781,70 @@ impl ReaderView {
         } else {
             title
         }
+    }
+
+    fn chapter_status_text(&self) -> Option<String> {
+        let idx = self.current_chapter_index()?;
+        let total = self.chapter_total()?;
+        let label = self.chapter_label(idx);
+        let mut parts = Vec::new();
+        parts.push(format!("Chapter {}/{}", idx + 1, total));
+        if let Some(percent) = self.chapter_percent(idx) {
+            parts.push(format!("{}%", percent));
+        }
+        let default_label = format!("Chapter {}", idx + 1);
+        if !label.is_empty() && label != default_label {
+            parts.push(label);
+        }
+        Some(parts.join(" · "))
+    }
+
+    fn chapter_total(&self) -> Option<usize> {
+        let total = self.chapter_starts.len();
+        if total == 0 {
+            return None;
+        }
+        if !self.has_full_page_set() {
+            return None;
+        }
+        Some(total)
+    }
+
+    fn chapter_percent(&self, idx: usize) -> Option<usize> {
+        let (start, end) = self.chapter_page_range(idx)?;
+        if end <= start {
+            return None;
+        }
+        let chapter_len = end.saturating_sub(start);
+        if chapter_len == 0 {
+            return None;
+        }
+        let pos = self
+            .current
+            .saturating_sub(start)
+            .min(chapter_len.saturating_sub(1));
+        let pct = ((pos + 1) as f32 / chapter_len as f32 * 100.0).round() as usize;
+        Some(pct.min(100).max(1))
+    }
+
+    fn chapter_page_range(&self, idx: usize) -> Option<(usize, usize)> {
+        let start = *self.chapter_starts.get(idx)?;
+        let end = if idx + 1 < self.chapter_starts.len() {
+            self.chapter_starts[idx + 1]
+        } else if self.has_full_page_set() {
+            self.total_pages.unwrap_or(self.pages.len())
+        } else {
+            return None;
+        };
+        if end <= start {
+            return None;
+        }
+        Some((start, end))
+    }
+
+    fn has_full_page_set(&self) -> bool {
+        self.total_pages
+            .map_or(true, |total| total == self.pages.len())
     }
 
     pub fn link_at_point(&self, point: SelectionPoint) -> Option<String> {
