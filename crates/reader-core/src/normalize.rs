@@ -754,16 +754,14 @@ fn image_block<F>(node: &NodeRef, resolve: &mut F) -> Option<Block>
 where
     F: FnMut(&str) -> Option<(String, Vec<u8>)>,
 {
-    let Some(el) = node.as_element() else {
-        return None;
-    };
+    let el = node.as_element()?;
     let attrs = el.attributes.borrow();
     let src = image_src(&attrs);
     let alt = image_label_text(&attrs);
     let (width, height) = image_dimensions(&attrs);
     let Some(src) = src else {
         let text = image_fallback_text(alt.as_deref(), width, height);
-        return (!text.is_empty()).then(|| Block::Paragraph(text));
+        return (!text.is_empty()).then_some(Block::Paragraph(text));
     };
     let (id, data) = match resolve(&src) {
         Some((id, data)) => (id, Some(data)),
@@ -816,7 +814,7 @@ where
         let text = caption
             .or_else(|| alt.clone())
             .unwrap_or_else(|| image_fallback_text(None, width, height));
-        return (!text.trim().is_empty()).then(|| Block::Paragraph(text));
+        return (!text.trim().is_empty()).then_some(Block::Paragraph(text));
     };
     let (id, data) = match resolve(&src) {
         Some((id, data)) => (id, Some(data)),
@@ -1042,7 +1040,7 @@ mod tests {
                 continue;
             }
             if ch == LINK_START {
-                while let Some(next) = chars.next() {
+                for next in chars.by_ref() {
                     if next == LINK_END {
                         break;
                     }
@@ -1050,7 +1048,7 @@ mod tests {
                 continue;
             }
             if ch == ANCHOR_START {
-                while let Some(next) = chars.next() {
+                for next in chars.by_ref() {
                     if next == ANCHOR_END {
                         break;
                     }

@@ -5,6 +5,12 @@ pub struct SearchView {
     pub query: String,
 }
 
+impl Default for SearchView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SearchView {
     pub fn new() -> Self {
         Self {
@@ -25,7 +31,7 @@ impl SearchView {
     }
 
     pub fn backspace(&mut self) {
-        if let Some((idx, _)) = self.query.grapheme_indices(true).last() {
+        if let Some((idx, _)) = self.query.grapheme_indices(true).next_back() {
             self.query.truncate(idx);
         }
     }

@@ -28,6 +28,25 @@ const SKIP_HINTS: [&str; 10] = [
     "dedication",
 ];
 
+struct ChapterStream {
+    document: Document,
+    book_id: BookId,
+    incoming: Receiver<IncomingChapter>,
+    prefetch_tx: Sender<ChapterPrefetchRequest>,
+    total_chapters: Option<usize>,
+    chapter_index_by_href: std::collections::HashMap<String, usize>,
+}
+
+type PdfStream = (
+    Document,
+    BookId,
+    Receiver<IncomingPage>,
+    Sender<PrefetchRequest>,
+    usize,
+    usize,
+    bool,
+);
+
 fn normalize_spine_href(base: &Path, href: &str) -> String {
     base.join(href.split('#').next().unwrap_or(href))
         .to_string_lossy()
@@ -198,7 +217,7 @@ impl EpubChapterLoader {
             }
             let key = normalize_spine_href(&self.base, &item.href);
             let label = self.label_map.get(&key).cloned();
-            let html = match EpubBook::load_chapter(&mut self.book, &item) {
+            let html = match self.book.load_chapter(item) {
                 Ok(s) => s,
                 Err(_) => continue,
             };
@@ -222,7 +241,7 @@ impl EpubChapterLoader {
                         chapter_dir.join(src)
                     };
                     let resolved = normalize_epub_path(&resolved);
-                    let data = EpubBook::load_resource(&mut self.book, &resolved).ok()?;
+                    let data = self.book.load_resource(&resolved).ok()?;
                     Some((resolved.to_string_lossy().to_string(), data))
                 },
                 move |href| {
@@ -352,40 +371,19 @@ fn main() {
         .unwrap_or(2);
 
     match stream_epub_lazy(path, initial_chapters, format) {
-        Ok((document, book_id, rx, prefetch_tx, total_chapters, chapter_index_by_href)) => {
-            run_reader_chapter_streaming(
-                document,
-                book_id,
-                0,
-                rx,
-                prefetch_tx,
-                total_chapters,
-                prefetch_window,
-                chapter_index_by_href,
-            );
-            return;
+        Ok(stream) => {
+            run_reader_chapter_streaming(stream, 0, prefetch_window);
         }
         Err(_) => match stream_epub_lazy(
             Path::new("docs/alice.epub"),
             initial_chapters,
             DocumentFormat::Epub3,
         ) {
-            Ok((document, book_id, rx, prefetch_tx, total_chapters, chapter_index_by_href)) => {
-                run_reader_chapter_streaming(
-                    document,
-                    book_id,
-                    0,
-                    rx,
-                    prefetch_tx,
-                    total_chapters,
-                    prefetch_window,
-                    chapter_index_by_href,
-                );
-                return;
+            Ok(stream) => {
+                run_reader_chapter_streaming(stream, 0, prefetch_window);
             }
             Err(e) => {
                 eprintln!("Failed to open file: {}", e);
-                return;
             }
         },
     }
@@ -395,17 +393,7 @@ fn stream_epub_lazy(
     path: &Path,
     initial_chapters: usize,
     format: DocumentFormat,
-) -> Result<
-    (
-        Document,
-        BookId,
-        Receiver<IncomingChapter>,
-        Sender<ChapterPrefetchRequest>,
-        Option<usize>,
-        std::collections::HashMap<String, usize>,
-    ),
-    reader_core::epub::ReaderError,
-> {
+) -> Result<ChapterStream, reader_core::epub::ReaderError> {
     let book = EpubBook::open(path)?;
     let book_id = BookId {
         id: format!("path:{}", path.display()),
@@ -498,28 +486,27 @@ fn stream_epub_lazy(
                     }
                     progressed = true;
                 }
-                if !progressed {
-                    if pending_loaded == loaded_count && pending_href.is_none() {
-                        if prefetch_rx
-                            .recv_timeout(Duration::from_millis(200))
-                            .is_err()
-                        {
-                            continue;
-                        }
-                    }
+                if !progressed
+                    && pending_loaded == loaded_count
+                    && pending_href.is_none()
+                    && prefetch_rx
+                        .recv_timeout(Duration::from_millis(200))
+                        .is_err()
+                {
+                    continue;
                 }
             }
         });
     }
 
-    Ok((
+    Ok(ChapterStream {
         document,
         book_id,
-        rx,
+        incoming: rx,
         prefetch_tx,
         total_chapters,
         chapter_index_by_href,
-    ))
+    })
 }
 
 fn stream_pdf(
@@ -527,18 +514,7 @@ fn stream_pdf(
     page_limit: Option<usize>,
     initial_pages: usize,
     backend: reader_core::pdf::PdfBackendKind,
-) -> Result<
-    (
-        Document,
-        BookId,
-        Receiver<IncomingPage>,
-        std::sync::mpsc::Sender<PrefetchRequest>,
-        usize,
-        usize,
-        bool,
-    ),
-    reader_core::pdf::PdfError,
-> {
+) -> Result<PdfStream, reader_core::pdf::PdfError> {
     let mut loader = PdfLoader::open_with_backend(path, backend)?;
     let total_pages_actual = loader.page_count();
     let target_pages = page_limit
@@ -589,17 +565,14 @@ fn stream_pdf(
                     }
                 }
                 if let Some(idx) = pending.pop_front() {
-                    match loader.load_page(idx) {
-                        Ok(page_blocks) => {
-                            let msg = IncomingPage {
-                                page_index: idx,
-                                blocks: page_blocks,
-                            };
-                            if tx.send(msg).is_err() {
-                                return;
-                            }
+                    if let Ok(page_blocks) = loader.load_page(idx) {
+                        let msg = IncomingPage {
+                            page_index: idx,
+                            blocks: page_blocks,
+                        };
+                        if tx.send(msg).is_err() {
+                            return;
                         }
-                        Err(_) => {}
                     }
                     continue;
                 }
@@ -668,15 +641,18 @@ fn run_reader(document: Document, book_id: BookId, selected_index: usize) {
 }
 
 fn run_reader_chapter_streaming(
-    document: Document,
-    book_id: BookId,
+    stream: ChapterStream,
     selected_index: usize,
-    incoming: Receiver<IncomingChapter>,
-    prefetch_tx: Sender<ChapterPrefetchRequest>,
-    total_chapters: Option<usize>,
     prefetch_window: usize,
-    chapter_index_by_href: std::collections::HashMap<String, usize>,
 ) {
+    let ChapterStream {
+        document,
+        book_id,
+        incoming,
+        prefetch_tx,
+        total_chapters,
+        chapter_index_by_href,
+    } = stream;
     // Load last location and update initial spine index
     let mut last = load_state(&book_id)
         .map(|r| r.last_location)

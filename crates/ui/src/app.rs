@@ -1385,7 +1385,7 @@ fn extract_after_anchor(text: &str, target: &str) -> (bool, String) {
 
 fn read_until(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, end: char) -> String {
     let mut out = String::new();
-    while let Some(ch) = chars.next() {
+    for ch in chars.by_ref() {
         if ch == end {
             break;
         }
@@ -1395,7 +1395,7 @@ fn read_until(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, end: char) -
 }
 
 fn skip_until(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, end: char) {
-    while let Some(ch) = chars.next() {
+    for ch in chars.by_ref() {
         if ch == end {
             break;
         }

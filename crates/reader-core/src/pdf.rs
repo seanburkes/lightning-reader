@@ -146,7 +146,7 @@ impl PdfRsBackend {
     fn walk_outline_item(
         &self,
         item_ref: &pdf::object::Ref<pdf::object::OutlineItem>,
-        depth: usize,
+        _depth: usize,
         resolver: &impl Resolve,
         out: &mut Vec<OutlineEntry>,
     ) -> Result<(), PdfError> {
@@ -162,10 +162,10 @@ impl PdfRsBackend {
             }
         }
         if let Some(first) = &item.first {
-            self.walk_outline_item(first, depth + 1, resolver, out)?;
+            self.walk_outline_item(first, _depth + 1, resolver, out)?;
         }
         if let Some(next) = &item.next {
-            self.walk_outline_item(next, depth, resolver, out)?;
+            self.walk_outline_item(next, _depth, resolver, out)?;
         }
         Ok(())
     }
@@ -182,7 +182,7 @@ impl LopdfBackend {
             return Err(PdfError::Empty);
         }
         let page_count = pages_map.len();
-        let pages = pages_map.into_iter().map(|(page, _)| page).collect();
+        let pages = pages_map.into_keys().collect();
         let (title, author) = pdf_metadata(&doc);
         Ok(Self {
             doc,
@@ -215,6 +215,12 @@ pub struct PdfLoader {
     cache: LruCache<usize, Vec<Block>>,
 }
 
+const CACHE_PAGES: usize = 8;
+
+fn cache_capacity() -> NonZeroUsize {
+    NonZeroUsize::new(CACHE_PAGES).unwrap_or(NonZeroUsize::MIN)
+}
+
 #[derive(Clone, Copy)]
 pub enum PdfBackendKind {
     PdfRs,
@@ -245,7 +251,7 @@ impl PdfLoader {
                 Ok(Self {
                     summary: backend.summary.clone(),
                     backend: Backend::PdfRs(backend),
-                    cache: LruCache::new(NonZeroUsize::new(8).unwrap()),
+                    cache: LruCache::new(cache_capacity()),
                 })
             }
             PdfBackendKind::Lopdf => {
@@ -253,7 +259,7 @@ impl PdfLoader {
                 Ok(Self {
                     summary: backend.summary.clone(),
                     backend: Backend::Lopdf(backend),
-                    cache: LruCache::new(NonZeroUsize::new(8).unwrap()),
+                    cache: LruCache::new(cache_capacity()),
                 })
             }
         }
@@ -534,7 +540,7 @@ fn page_title_from_blocks(blocks: &[Block]) -> Option<String> {
                 return None;
             }
             let len = trimmed.chars().count();
-            if len >= 6 && len <= 80 {
+            if (6..=80).contains(&len) {
                 Some(trimmed.to_string())
             } else {
                 None
@@ -553,7 +559,7 @@ fn outline_dest_to_page(
     let dest = dest.as_ref()?;
     let resolved = dest.clone().resolve(resolver).ok()?;
     if let Ok(arr) = resolved.as_array() {
-        if let Some(page_ref) = arr.get(0) {
+        if let Some(page_ref) = arr.first() {
             if let Ok(page_ref) = page_ref.clone().into_reference() {
                 for (idx, page) in file.pages().enumerate() {
                     if let Ok(page) = page {

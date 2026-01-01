@@ -155,11 +155,10 @@ impl ReaderView {
             .split(area);
         let content_area = vchunks[0];
         let col_w = if self.two_pane {
-            let total = column_width
+            column_width
                 .saturating_mul(2)
                 .saturating_add(SPREAD_GAP)
-                .min(content_area.width);
-            total
+                .min(content_area.width)
         } else {
             column_width.min(content_area.width)
         };
@@ -227,11 +226,10 @@ impl ReaderView {
             .split(area);
         let content_area = vchunks[0];
         let col_w = if two_pane {
-            let total = column_width
+            column_width
                 .saturating_mul(2)
                 .saturating_add(SPREAD_GAP)
-                .min(content_area.width);
-            total
+                .min(content_area.width)
         } else {
             column_width.min(content_area.width)
         };
@@ -265,11 +263,10 @@ impl ReaderView {
 
         let content_area = vchunks[0];
         let col_w = if self.two_pane {
-            let total = column_width
+            column_width
                 .saturating_mul(2)
                 .saturating_add(SPREAD_GAP)
-                .min(content_area.width);
-            total
+                .min(content_area.width)
         } else {
             column_width.min(content_area.width)
         };
@@ -544,7 +541,7 @@ impl ReaderView {
     pub fn up(&mut self, lines: usize) {
         let delta = lines.max(1);
         let step = if self.two_pane {
-            ((delta + 1) / 2) * 2
+            delta.div_ceil(2) * 2
         } else {
             delta
         };
@@ -557,7 +554,7 @@ impl ReaderView {
     pub fn down(&mut self, lines: usize) {
         let delta = lines.max(1);
         let step = if self.two_pane {
-            ((delta + 1) / 2) * 2
+            delta.div_ceil(2) * 2
         } else {
             delta
         };
@@ -827,7 +824,7 @@ impl ReaderView {
             .saturating_sub(start)
             .min(chapter_len.saturating_sub(1));
         let pct = ((pos + 1) as f32 / chapter_len as f32 * 100.0).round() as usize;
-        Some(pct.min(100).max(1))
+        Some(pct.clamp(1, 100))
     }
 
     fn chapter_page_range(&self, idx: usize) -> Option<(usize, usize)> {
@@ -847,7 +844,7 @@ impl ReaderView {
 
     fn has_full_page_set(&self) -> bool {
         self.total_pages
-            .map_or(true, |total| total == self.pages.len())
+            .is_none_or(|total| total == self.pages.len())
     }
 
     pub fn link_at_point(&self, point: SelectionPoint) -> Option<String> {
@@ -1088,12 +1085,10 @@ fn strip_parenthetical_links(input: &str) -> String {
     let mut buf = String::new();
     let mut in_paren = false;
     for ch in input.chars() {
-        if ch == '(' {
-            if !in_paren {
-                in_paren = true;
-                buf.clear();
-                continue;
-            }
+        if ch == '(' && !in_paren {
+            in_paren = true;
+            buf.clear();
+            continue;
         }
         if ch == ')' && in_paren {
             let lower = buf.to_ascii_lowercase();
@@ -1148,7 +1143,7 @@ fn strip_inline_markers(input: &str) -> String {
             continue;
         }
         if ch == '\x1C' {
-            while let Some(next) = chars.next() {
+            for next in chars.by_ref() {
                 if next == '\x1D' {
                     break;
                 }
@@ -1156,7 +1151,7 @@ fn strip_inline_markers(input: &str) -> String {
             continue;
         }
         if ch == '\x18' {
-            while let Some(next) = chars.next() {
+            for next in chars.by_ref() {
                 if next == '\x17' {
                     break;
                 }

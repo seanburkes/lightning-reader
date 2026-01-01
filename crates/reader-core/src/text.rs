@@ -237,9 +237,7 @@ fn setext_level(line: &str) -> Option<u8> {
     if trimmed.len() < 3 {
         return None;
     }
-    let Some(first) = trimmed.chars().next() else {
-        return None;
-    };
+    let first = trimmed.chars().next()?;
     if first != '=' && first != '-' {
         return None;
     }

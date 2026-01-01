@@ -203,8 +203,7 @@ impl WordToken {
     }
 
     fn has_sentence_end_punct(text: &str) -> bool {
-        let trimmed =
-            text.trim_end_matches(|c: char| c == ')' || c == ']' || c == '"' || c == '\'');
+        let trimmed = text.trim_end_matches([')', ']', '"', '\'']);
         trimmed.ends_with('.')
             || trimmed.ends_with('!')
             || trimmed.ends_with('?')
@@ -213,8 +212,7 @@ impl WordToken {
     }
 
     fn has_comma_punct(text: &str) -> bool {
-        let trimmed =
-            text.trim_end_matches(|c: char| c == ')' || c == ']' || c == '"' || c == '\'');
+        let trimmed = text.trim_end_matches([')', ']', '"', '\'']);
         trimmed.ends_with(',') || trimmed.ends_with('-') || trimmed.ends_with(')')
     }
 }
@@ -259,7 +257,7 @@ fn strip_style_markers(input: &str) -> String {
             continue;
         }
         if ch == LINK_START {
-            while let Some(next) = chars.next() {
+            for next in chars.by_ref() {
                 if next == LINK_END {
                     break;
                 }
@@ -267,7 +265,7 @@ fn strip_style_markers(input: &str) -> String {
             continue;
         }
         if ch == ANCHOR_START {
-            while let Some(next) = chars.next() {
+            for next in chars.by_ref() {
                 if next == ANCHOR_END {
                     break;
                 }
@@ -618,9 +616,9 @@ fn render_table(table: &TableBlock, width: usize) -> Vec<(StyledLine, Vec<String
     for (row_idx, row) in table.rows.iter().enumerate() {
         let row_has_header = row.iter().any(|cell| cell.is_header);
         let mut wrapped_cells: Vec<WrappedLines> = Vec::with_capacity(col_count);
-        for col in 0..col_count {
+        for (col, col_width) in col_widths.iter().enumerate().take(col_count) {
             let text = row.get(col).map(|cell| cell.text.trim()).unwrap_or("");
-            let wrapped = wrap_styled_text(text, col_widths[col].max(1));
+            let wrapped = wrap_styled_text(text, (*col_width).max(1));
             wrapped_cells.push(wrapped);
         }
         let row_height = wrapped_cells
@@ -632,8 +630,7 @@ fn render_table(table: &TableBlock, width: usize) -> Vec<(StyledLine, Vec<String
         for line_idx in 0..row_height {
             let mut segments: Vec<Segment> = Vec::new();
             let mut line_anchors: Vec<String> = Vec::new();
-            for col in 0..col_count {
-                let wrapped = &wrapped_cells[col];
+            for (col, wrapped) in wrapped_cells.iter().enumerate().take(col_count) {
                 let line = wrapped
                     .lines
                     .get(line_idx)
@@ -932,7 +929,7 @@ fn parse_inline_pieces(text: &str) -> Vec<InlinePiece> {
         if ch == LINK_START {
             let mut target = String::new();
             let mut found_end = false;
-            while let Some(next) = chars.next() {
+            for next in chars.by_ref() {
                 if next == LINK_END {
                     found_end = true;
                     break;
@@ -961,7 +958,7 @@ fn parse_inline_pieces(text: &str) -> Vec<InlinePiece> {
         if ch == ANCHOR_START {
             let mut target = String::new();
             let mut found_end = false;
-            while let Some(next) = chars.next() {
+            for next in chars.by_ref() {
                 if next == ANCHOR_END {
                     found_end = true;
                     break;
