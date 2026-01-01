@@ -12,8 +12,10 @@ impl SearchView {
         }
     }
 
-    pub fn with_query(query: String) -> Self {
-        Self { query }
+    pub fn with_query(query: &str) -> Self {
+        Self {
+            query: query.to_string(),
+        }
     }
 
     pub fn push_char(&mut self, c: char) {

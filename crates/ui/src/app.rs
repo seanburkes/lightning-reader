@@ -725,8 +725,7 @@ impl App {
                                         self.search = None;
                                     }
                                     KeyCode::Enter => {
-                                        let query = search.query.clone();
-                                        let trimmed = query.trim().to_string();
+                                        let trimmed = search.query.trim().to_string();
                                         let start_from =
                                             if self.last_search.as_deref().map(str::trim)
                                                 == Some(trimmed.as_str())
@@ -841,8 +840,7 @@ impl App {
                                             }
                                         }
                                     } else if let Some(search) = &self.search {
-                                        let query = search.query.clone();
-                                        let trimmed = query.trim().to_string();
+                                        let trimmed = search.query.trim().to_string();
                                         let start_from =
                                             if self.last_search.as_deref().map(str::trim)
                                                 == Some(trimmed.as_str())
@@ -869,7 +867,7 @@ impl App {
                                 }
                                 KeyCode::Char('/') => {
                                     let search = if let Some(prev) = &self.last_search {
-                                        SearchView::with_query(prev.clone())
+                                        SearchView::with_query(prev)
                                     } else {
                                         SearchView::new()
                                     };

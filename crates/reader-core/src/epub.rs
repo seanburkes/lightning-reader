@@ -534,8 +534,8 @@ impl EpubBook {
         let mut zip = ZipArchive::new(file)?;
         let rootfile = read_container(&mut zip)?;
         let (metadata, manifest, spine_ids, spine_toc) = read_opf(&mut zip, &rootfile)?;
-        let title = metadata.main_title();
-        let subtitle = metadata.subtitle();
+        let title = metadata.main_title().map(|s| s.to_string());
+        let subtitle = metadata.subtitle().map(|s| s.to_string());
         let author = metadata.author_string();
         let nav_href = manifest
             .iter()

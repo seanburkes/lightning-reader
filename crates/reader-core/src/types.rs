@@ -53,19 +53,19 @@ pub struct BookMetadata {
 }
 
 impl BookMetadata {
-    pub fn main_title(&self) -> Option<String> {
+    pub fn main_title(&self) -> Option<&str> {
         self.titles
             .iter()
             .find(|t| matches!(t.kind, TitleKind::Main))
             .or_else(|| self.titles.first())
-            .map(|t| t.text.clone())
+            .map(|t| t.text.as_str())
     }
 
-    pub fn subtitle(&self) -> Option<String> {
+    pub fn subtitle(&self) -> Option<&str> {
         self.titles
             .iter()
             .find(|t| matches!(t.kind, TitleKind::Subtitle))
-            .map(|t| t.text.clone())
+            .map(|t| t.text.as_str())
     }
 
     pub fn author_string(&self) -> Option<String> {
@@ -113,7 +113,10 @@ impl DocumentInfo {
         author: Option<String>,
         metadata: Option<BookMetadata>,
     ) -> Self {
-        let subtitle = metadata.as_ref().and_then(|m| m.subtitle());
+        let subtitle = metadata
+            .as_ref()
+            .and_then(|m| m.subtitle())
+            .map(|s| s.to_string());
         Self {
             id: book.id.clone(),
             path: book.path.clone(),

@@ -132,14 +132,14 @@ pub fn extract_words(blocks: &[Block]) -> Vec<WordToken> {
                     continue;
                 }
                 for word in cleaned.split_whitespace() {
-                    let token = WordToken::from_word(word.to_string(), current_chapter);
+                    let token = WordToken::from_word(word, current_chapter);
                     words.push(token);
                 }
             }
             Block::Heading(text, _) => {
                 let cleaned = strip_style_markers(text);
                 for word in cleaned.split_whitespace() {
-                    let token = WordToken::from_word(word.to_string(), current_chapter);
+                    let token = WordToken::from_word(word, current_chapter);
                     words.push(token);
                 }
             }
@@ -147,7 +147,7 @@ pub fn extract_words(blocks: &[Block]) -> Vec<WordToken> {
                 for item in items {
                     let cleaned = strip_style_markers(item);
                     for word in cleaned.split_whitespace() {
-                        let token = WordToken::from_word(word.to_string(), current_chapter);
+                        let token = WordToken::from_word(word, current_chapter);
                         words.push(token);
                     }
                 }
@@ -155,7 +155,7 @@ pub fn extract_words(blocks: &[Block]) -> Vec<WordToken> {
             Block::Quote(text) => {
                 let cleaned = strip_style_markers(text);
                 for word in cleaned.split_whitespace() {
-                    let token = WordToken::from_word(word.to_string(), current_chapter);
+                    let token = WordToken::from_word(word, current_chapter);
                     words.push(token);
                 }
             }
@@ -167,7 +167,7 @@ pub fn extract_words(blocks: &[Block]) -> Vec<WordToken> {
                     .map(|s| strip_style_markers(s));
                 if let Some(label) = label {
                     for word in label.split_whitespace() {
-                        let token = WordToken::from_word(word.to_string(), current_chapter);
+                        let token = WordToken::from_word(word, current_chapter);
                         words.push(token);
                     }
                 }
@@ -177,7 +177,7 @@ pub fn extract_words(blocks: &[Block]) -> Vec<WordToken> {
                     for cell in row {
                         let cleaned = strip_style_markers(&cell.text);
                         for word in cleaned.split_whitespace() {
-                            let token = WordToken::from_word(word.to_string(), current_chapter);
+                            let token = WordToken::from_word(word, current_chapter);
                             words.push(token);
                         }
                     }
@@ -190,12 +190,12 @@ pub fn extract_words(blocks: &[Block]) -> Vec<WordToken> {
 }
 
 impl WordToken {
-    fn from_word(text: String, chapter_index: Option<usize>) -> Self {
-        let is_sentence_end = Self::has_sentence_end_punct(&text);
-        let is_comma = Self::has_comma_punct(&text);
+    fn from_word(text: &str, chapter_index: Option<usize>) -> Self {
+        let is_sentence_end = Self::has_sentence_end_punct(text);
+        let is_comma = Self::has_comma_punct(text);
 
         WordToken {
-            text,
+            text: text.to_string(),
             is_sentence_end,
             is_comma,
             chapter_index,
