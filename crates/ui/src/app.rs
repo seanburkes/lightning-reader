@@ -11,8 +11,8 @@ use std::{
 use arboard::Clipboard;
 use crossterm::{
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseButton, MouseEvent,
-        MouseEventKind,
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
+        MouseButton, MouseEvent, MouseEventKind,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -53,6 +53,112 @@ pub enum Mode {
     Reader,
     Toc,
     Spritz,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SearchCommand {
+    Cancel,
+    Submit,
+    Backspace,
+    Insert(char),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Command {
+    Exit,
+    Cancel,
+    Submit,
+    StartSearch,
+    ToggleToc,
+    ToggleSpritz,
+    ToggleHelp,
+    CloseHelp,
+    CloseFootnote,
+    AdjustWidth(i16),
+    NavigateDown(usize),
+    NavigateUp(usize),
+    PageDown,
+    PageUp,
+    ToggleJustify,
+    ToggleTwoPane,
+    SpritzTogglePlay,
+    SpritzJumpToChapterStart,
+    SpritzJumpToChapterEnd,
+    SpritzAdjustWpm(i16),
+    SpritzAdvance(usize),
+    SpritzRewind(usize),
+    Search(SearchCommand),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CommandOutcome {
+    Continue,
+    Exit,
+}
+
+impl Command {
+    fn from_key(app: &App, key: KeyEvent) -> Option<Self> {
+        if app.search.is_some() {
+            return match key.code {
+                KeyCode::Esc => Some(Command::Search(SearchCommand::Cancel)),
+                KeyCode::Enter => Some(Command::Search(SearchCommand::Submit)),
+                KeyCode::Backspace => Some(Command::Search(SearchCommand::Backspace)),
+                KeyCode::Char(c) => Some(Command::Search(SearchCommand::Insert(c))),
+                _ => None,
+            };
+        }
+        if app.footnote.is_some() {
+            return matches!(key.code, KeyCode::Esc).then_some(Command::CloseFootnote);
+        }
+        if app.show_help {
+            return matches!(key.code, KeyCode::Esc | KeyCode::Char('?'))
+                .then_some(Command::CloseHelp);
+        }
+
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('q') => Some(Command::Exit),
+            KeyCode::Char('c') if ctrl => Some(Command::Exit),
+            KeyCode::Esc => Some(Command::Cancel),
+            KeyCode::Enter => Some(Command::Submit),
+            KeyCode::Char('/') => Some(Command::StartSearch),
+            KeyCode::Char('t') => Some(Command::ToggleToc),
+            KeyCode::Char('s') => Some(Command::ToggleSpritz),
+            KeyCode::Char('?') => Some(Command::ToggleHelp),
+            KeyCode::Char('j') | KeyCode::Down => {
+                if ctrl && matches!(app.mode, Mode::Spritz) {
+                    Some(Command::SpritzAdvance(10))
+                } else if ctrl {
+                    None
+                } else {
+                    Some(Command::NavigateDown(1))
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if ctrl && matches!(app.mode, Mode::Spritz) {
+                    Some(Command::SpritzRewind(10))
+                } else if ctrl {
+                    None
+                } else {
+                    Some(Command::NavigateUp(1))
+                }
+            }
+            KeyCode::Char('h') | KeyCode::Left => Some(Command::AdjustWidth(-2)),
+            KeyCode::Char('l') | KeyCode::Right => Some(Command::AdjustWidth(2)),
+            KeyCode::PageDown => Some(Command::PageDown),
+            KeyCode::PageUp => Some(Command::PageUp),
+            KeyCode::Char('J') => Some(Command::ToggleJustify),
+            KeyCode::Char('b') => Some(Command::ToggleTwoPane),
+            KeyCode::Char(' ') => Some(Command::SpritzTogglePlay),
+            KeyCode::Char('r') => Some(Command::SpritzJumpToChapterStart),
+            KeyCode::Char('f') => Some(Command::SpritzJumpToChapterEnd),
+            KeyCode::Char('+') | KeyCode::Char('=') => Some(Command::SpritzAdjustWpm(10)),
+            KeyCode::Char('-') | KeyCode::Char('_') => Some(Command::SpritzAdjustWpm(-10)),
+            KeyCode::Char(']') => Some(Command::SpritzAdjustWpm(50)),
+            KeyCode::Char('[') => Some(Command::SpritzAdjustWpm(-50)),
+            _ => None,
+        }
+    }
 }
 
 pub struct App {
@@ -528,6 +634,356 @@ impl App {
         true
     }
 
+    fn save_spritz_session(&self, spritz: &SpritzView) {
+        let Some(book_id) = &self.book_id else {
+            return;
+        };
+        let session = reader_core::SpritzSession {
+            book_id: book_id.clone(),
+            word_index: spritz.current_index,
+            wpm: spritz.wpm,
+            saved_at: Utc::now().to_rfc3339(),
+        };
+        let _ = reader_core::save_spritz_session(&session);
+    }
+
+    fn start_spritz(&mut self) {
+        let words = reader_core::layout::extract_words(&self.blocks);
+        let settings = SpritzSettings::default();
+        let mut spritz = SpritzView::new(
+            words,
+            settings,
+            self.chapter_titles.clone(),
+            self.theme.clone(),
+        );
+
+        if let Some(book_id) = &self.book_id {
+            if let Some(session) = reader_core::load_spritz_session(book_id) {
+                spritz.current_index = session.word_index;
+                spritz.wpm = session.wpm;
+            }
+        }
+
+        self.spritz = Some(spritz);
+        self.mode = Mode::Spritz;
+    }
+
+    fn stop_spritz(&mut self) {
+        if let Some(spritz) = &self.spritz {
+            self.save_spritz_session(spritz);
+        }
+        self.spritz = None;
+        self.mode = Mode::Reader;
+    }
+
+    fn open_toc(&mut self, view: &ReaderView) {
+        let items = self.build_toc_items(view);
+        let mut toc = TocView::new(items);
+        if let Some(idx) = toc
+            .items
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(i, item)| item.page.filter(|p| *p <= view.current).map(|_| i))
+        {
+            toc.selected = idx;
+        }
+        self.toc = Some(toc);
+        self.mode = Mode::Toc;
+    }
+
+    fn submit_toc(&mut self, view: &mut ReaderView) {
+        if let Some(toc) = &self.toc {
+            if let Some(item) = toc.current_item() {
+                if let Some(target) = item.page {
+                    view.current = target.min(view.pages.len().saturating_sub(1));
+                } else if let Some(href) = item.href.as_deref() {
+                    if !view.jump_to_target(href) {
+                        self.pending_chapter_jump = Some(href.to_string());
+                        if let Some(tx) = &self.prefetch_chapter_tx {
+                            let target_loaded = self
+                                .chapter_index_for_href(href)
+                                .map(|idx| idx.saturating_add(1))
+                                .unwrap_or_else(|| {
+                                    self.chapter_titles
+                                        .len()
+                                        .saturating_add(self.prefetch_chapter_window.max(1))
+                                });
+                            let _ = tx.send(ChapterPrefetchRequest {
+                                target_loaded,
+                                target_href: Some(href.to_string()),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        self.mode = Mode::Reader;
+        self.toc = None;
+    }
+
+    fn apply_search_command(&mut self, view: &mut ReaderView, command: SearchCommand) {
+        match command {
+            SearchCommand::Cancel => {
+                self.search = None;
+            }
+            SearchCommand::Backspace => {
+                if let Some(search) = &mut self.search {
+                    search.backspace();
+                }
+            }
+            SearchCommand::Insert(c) => {
+                if let Some(search) = &mut self.search {
+                    search.push_char(c);
+                }
+            }
+            SearchCommand::Submit => {
+                let (trimmed, start_from) = match &self.search {
+                    Some(search) => {
+                        let trimmed = search.query.trim().to_string();
+                        let start_from = if self.last_search.as_deref().map(str::trim)
+                            == Some(trimmed.as_str())
+                        {
+                            self.last_search_hit.map(|p| p + 1)
+                        } else {
+                            None
+                        };
+                        (trimmed, start_from)
+                    }
+                    None => return,
+                };
+                self.last_search = Some(trimmed.clone());
+                if let Some(idx) = view.search_forward(&trimmed, start_from) {
+                    let target = if view.two_pane {
+                        idx.saturating_sub(idx % 2)
+                    } else {
+                        idx
+                    };
+                    view.current = target;
+                    self.last_search_hit = Some(idx);
+                } else {
+                    self.last_search_hit = None;
+                }
+                self.search = None;
+            }
+        }
+    }
+
+    fn apply_width_delta(width: &mut u16, delta: i16) {
+        if delta < 0 {
+            *width = width.saturating_sub((-delta) as u16);
+        } else {
+            *width = width.saturating_add(delta as u16);
+        }
+    }
+
+    fn reflow_view<B: Backend>(
+        &self,
+        view: &mut ReaderView,
+        terminal: &mut Terminal<B>,
+        width: u16,
+        last_inner: &mut (u16, u16),
+    ) -> std::io::Result<()> {
+        let inner = ReaderView::inner_size(terminal.size()?, width, view.two_pane);
+        view.reflow(&self.blocks, inner);
+        *last_inner = (inner.width, inner.height);
+        Ok(())
+    }
+
+    fn apply_command<B: Backend>(
+        &mut self,
+        command: Command,
+        view: &mut ReaderView,
+        width: &mut u16,
+        height: u16,
+        last_inner: &mut (u16, u16),
+        terminal: &mut Terminal<B>,
+    ) -> std::io::Result<CommandOutcome> {
+        match command {
+            Command::Exit => return Ok(CommandOutcome::Exit),
+            Command::Search(search) => {
+                self.apply_search_command(view, search);
+            }
+            Command::CloseFootnote => {
+                self.footnote = None;
+            }
+            Command::CloseHelp => {
+                self.show_help = false;
+            }
+            Command::ToggleHelp => {
+                self.show_help = !self.show_help;
+            }
+            Command::Cancel => match self.mode {
+                Mode::Toc => {
+                    self.mode = Mode::Reader;
+                    self.toc = None;
+                }
+                Mode::Spritz => {
+                    self.stop_spritz();
+                }
+                Mode::Reader => {}
+            },
+            Command::Submit => match self.mode {
+                Mode::Toc => {
+                    self.submit_toc(view);
+                }
+                Mode::Spritz => {
+                    if let Some(spritz) = &mut self.spritz {
+                        if !spritz.is_playing {
+                            spritz.play();
+                        }
+                    }
+                }
+                Mode::Reader => {}
+            },
+            Command::StartSearch => {
+                let search = if let Some(prev) = &self.last_search {
+                    SearchView::with_query(prev)
+                } else {
+                    SearchView::new()
+                };
+                self.search = Some(search);
+            }
+            Command::ToggleToc => {
+                self.open_toc(view);
+            }
+            Command::ToggleSpritz => match self.mode {
+                Mode::Reader => {
+                    self.start_spritz();
+                }
+                Mode::Spritz => {
+                    self.stop_spritz();
+                }
+                Mode::Toc => {}
+            },
+            Command::NavigateDown(lines) => match self.mode {
+                Mode::Reader => {
+                    view.down(lines);
+                    view.last_key = Some("j/down".into());
+                }
+                Mode::Toc => {
+                    if let Some(toc) = &mut self.toc {
+                        toc.down();
+                    }
+                }
+                Mode::Spritz => {
+                    if let Some(spritz) = &mut self.spritz {
+                        spritz.fast_forward(lines);
+                    }
+                }
+            },
+            Command::NavigateUp(lines) => match self.mode {
+                Mode::Reader => {
+                    view.up(lines);
+                    view.last_key = Some("k/up".into());
+                }
+                Mode::Toc => {
+                    if let Some(toc) = &mut self.toc {
+                        toc.up();
+                    }
+                }
+                Mode::Spritz => {
+                    if let Some(spritz) = &mut self.spritz {
+                        spritz.rewind(lines);
+                    }
+                }
+            },
+            Command::PageDown => {
+                if let Mode::Reader = self.mode {
+                    view.down((height / 2) as usize);
+                    view.last_key = Some("PgDn".into());
+                }
+            }
+            Command::PageUp => {
+                if let Mode::Reader = self.mode {
+                    view.up((height / 2) as usize);
+                    view.last_key = Some("PgUp".into());
+                }
+            }
+            Command::AdjustWidth(delta) => match self.mode {
+                Mode::Reader => {
+                    Self::apply_width_delta(width, delta);
+                    self.reflow_view(view, terminal, *width, last_inner)?;
+                    view.last_key = Some(if delta < 0 { "h/left" } else { "l/right" }.into());
+                }
+                Mode::Spritz => {
+                    Self::apply_width_delta(width, delta);
+                    *last_inner = (*width, last_inner.1);
+                }
+                Mode::Toc => {}
+            },
+            Command::ToggleJustify => {
+                if let Mode::Reader = self.mode {
+                    view.justify = !view.justify;
+                    save_settings(view.justify, view.two_pane, &SpritzSettings::default());
+                    view.last_key = Some("J toggle".into());
+                    self.reflow_view(view, terminal, *width, last_inner)?;
+                }
+            }
+            Command::ToggleTwoPane => {
+                if let Mode::Reader = self.mode {
+                    view.two_pane = !view.two_pane;
+                    if view.two_pane {
+                        view.current = view.current.saturating_sub(view.current % 2);
+                    }
+                    save_settings(view.justify, view.two_pane, &SpritzSettings::default());
+                    self.reflow_view(view, terminal, *width, last_inner)?;
+                    view.last_key = Some(
+                        if view.two_pane {
+                            "b spread on"
+                        } else {
+                            "b spread off"
+                        }
+                        .into(),
+                    );
+                }
+            }
+            Command::SpritzTogglePlay => {
+                if let Mode::Spritz = self.mode {
+                    if let Some(spritz) = &mut self.spritz {
+                        spritz.toggle_play();
+                    }
+                }
+            }
+            Command::SpritzJumpToChapterStart => {
+                if let Mode::Spritz = self.mode {
+                    if let Some(spritz) = &mut self.spritz {
+                        spritz.jump_to_chapter_start();
+                    }
+                }
+            }
+            Command::SpritzJumpToChapterEnd => {
+                if let Mode::Spritz = self.mode {
+                    if let Some(spritz) = &mut self.spritz {
+                        spritz.jump_to_chapter_end();
+                    }
+                }
+            }
+            Command::SpritzAdjustWpm(delta) => {
+                if let Mode::Spritz = self.mode {
+                    if let Some(spritz) = &mut self.spritz {
+                        spritz.adjust_wpm(delta);
+                    }
+                }
+            }
+            Command::SpritzAdvance(steps) => {
+                if let Mode::Spritz = self.mode {
+                    if let Some(spritz) = &mut self.spritz {
+                        spritz.fast_forward(steps);
+                    }
+                }
+            }
+            Command::SpritzRewind(steps) => {
+                if let Mode::Spritz = self.mode {
+                    if let Some(spritz) = &mut self.spritz {
+                        spritz.rewind(steps);
+                    }
+                }
+            }
+        }
+        Ok(CommandOutcome::Continue)
+    }
+
     pub fn run(mut self) -> std::io::Result<usize> {
         let mut stdout = stdout();
         let raw_ok = enable_raw_mode().is_ok();
@@ -697,463 +1153,43 @@ impl App {
             }
 
             match event::poll(Duration::from_millis(100)) {
-                Ok(true) => {
-                    match event::read() {
-                        Ok(Event::Mouse(mouse)) => {
-                            if let Mode::Reader = self.mode {
-                                if self.search.is_some()
-                                    || self.show_help
-                                    || self.footnote.is_some()
-                                {
-                                    continue;
-                                }
-                                handle_mouse_selection(
-                                    &mut self,
-                                    &mut view,
-                                    last_frame,
-                                    width,
-                                    mouse,
-                                    &mut selection_anchor,
-                                    &mut selection_active,
-                                );
-                            }
-                        }
-                        Ok(Event::Key(key)) => {
-                            if let Some(search) = &mut self.search {
-                                match key.code {
-                                    KeyCode::Esc => {
-                                        self.search = None;
-                                    }
-                                    KeyCode::Enter => {
-                                        let trimmed = search.query.trim().to_string();
-                                        let start_from =
-                                            if self.last_search.as_deref().map(str::trim)
-                                                == Some(trimmed.as_str())
-                                            {
-                                                self.last_search_hit.map(|p| p + 1)
-                                            } else {
-                                                None
-                                            };
-                                        self.last_search = Some(trimmed.clone());
-                                        if let Some(idx) = view.search_forward(&trimmed, start_from)
-                                        {
-                                            let target = if view.two_pane {
-                                                idx.saturating_sub(idx % 2)
-                                            } else {
-                                                idx
-                                            };
-                                            view.current = target;
-                                            self.last_search_hit = Some(idx);
-                                        } else {
-                                            self.last_search_hit = None;
-                                        }
-                                        self.search = None;
-                                    }
-                                    KeyCode::Backspace => {
-                                        search.backspace();
-                                    }
-                                    KeyCode::Char(c) => {
-                                        search.push_char(c);
-                                    }
-                                    _ => {}
-                                }
+                Ok(true) => match event::read() {
+                    Ok(Event::Mouse(mouse)) => {
+                        if let Mode::Reader = self.mode {
+                            if self.search.is_some() || self.show_help || self.footnote.is_some() {
                                 continue;
                             }
-                            if self.footnote.is_some() {
-                                if matches!(key.code, KeyCode::Esc) {
-                                    self.footnote = None;
-                                }
-                                continue;
-                            }
-                            if self.show_help {
-                                match key.code {
-                                    KeyCode::Esc | KeyCode::Char('?') => {
-                                        self.show_help = false;
-                                    }
-                                    _ => {}
-                                }
-                                continue;
-                            }
-                            match key.code {
-                                KeyCode::Char('q') => exit = true,
-                                KeyCode::Esc => {
-                                    if let Mode::Toc = self.mode {
-                                        self.mode = Mode::Reader;
-                                    } else if let Mode::Spritz = self.mode {
-                                        if let Some(spritz) = &self.spritz {
-                                            if let Some(book_id) = &self.book_id {
-                                                let session = reader_core::SpritzSession {
-                                                    book_id: book_id.clone(),
-                                                    word_index: spritz.current_index,
-                                                    wpm: spritz.wpm,
-                                                    saved_at: Utc::now().to_rfc3339(),
-                                                };
-                                                let _ = reader_core::save_spritz_session(&session);
-                                            }
-                                        }
-                                        self.spritz = None;
-                                        self.mode = Mode::Reader;
-                                    }
-                                }
-                                KeyCode::Enter => {
-                                    if let Mode::Toc = self.mode {
-                                        if let Some(t) = &self.toc {
-                                            if let Some(item) = t.current_item() {
-                                                if let Some(target) = item.page {
-                                                    view.current = target
-                                                        .min(view.pages.len().saturating_sub(1));
-                                                } else if let Some(href) = item.href.as_deref() {
-                                                    if !view.jump_to_target(href) {
-                                                        self.pending_chapter_jump =
-                                                            Some(href.to_string());
-                                                        if let Some(tx) = &self.prefetch_chapter_tx
-                                                        {
-                                                            let target_loaded = self
-                                                                .chapter_index_for_href(href)
-                                                                .map(|idx| idx.saturating_add(1))
-                                                                .unwrap_or_else(|| {
-                                                                    self.chapter_titles
-                                                                        .len()
-                                                                        .saturating_add(
-                                                                            self.prefetch_chapter_window
-                                                                                .max(1),
-                                                                        )
-                                                                });
-                                                            let _ =
-                                                                tx.send(ChapterPrefetchRequest {
-                                                                    target_loaded,
-                                                                    target_href: Some(
-                                                                        href.to_string(),
-                                                                    ),
-                                                                });
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            self.mode = Mode::Reader;
-                                            self.toc = None;
-                                        }
-                                    } else if let Mode::Spritz = self.mode {
-                                        if let Some(spritz) = &mut self.spritz {
-                                            if !spritz.is_playing {
-                                                spritz.play();
-                                            }
-                                        }
-                                    } else if let Some(search) = &self.search {
-                                        let trimmed = search.query.trim().to_string();
-                                        let start_from =
-                                            if self.last_search.as_deref().map(str::trim)
-                                                == Some(trimmed.as_str())
-                                            {
-                                                self.last_search_hit.map(|p| p + 1)
-                                            } else {
-                                                None
-                                            };
-                                        self.last_search = Some(trimmed.clone());
-                                        if let Some(idx) = view.search_forward(&trimmed, start_from)
-                                        {
-                                            let target = if view.two_pane {
-                                                idx.saturating_sub(idx % 2)
-                                            } else {
-                                                idx
-                                            };
-                                            view.current = target;
-                                            self.last_search_hit = Some(idx);
-                                        } else {
-                                            self.last_search_hit = None;
-                                        }
-                                        self.search = None;
-                                    }
-                                }
-                                KeyCode::Char('/') => {
-                                    let search = if let Some(prev) = &self.last_search {
-                                        SearchView::with_query(prev)
-                                    } else {
-                                        SearchView::new()
-                                    };
-                                    self.search = Some(search);
-                                }
-                                KeyCode::Char('t') => {
-                                    let items = self.build_toc_items(&view);
-                                    let mut toc = TocView::new(items);
-                                    if let Some(idx) =
-                                        toc.items.iter().enumerate().rev().find_map(|(i, item)| {
-                                            item.page.filter(|p| *p <= view.current).map(|_| i)
-                                        })
-                                    {
-                                        toc.selected = idx;
-                                    }
-                                    self.toc = Some(toc);
-                                    self.mode = Mode::Toc;
-                                }
-                                KeyCode::Char('s') => match self.mode {
-                                    Mode::Reader => {
-                                        let words =
-                                            reader_core::layout::extract_words(&self.blocks);
-                                        let settings = SpritzSettings::default();
-                                        let mut spritz = SpritzView::new(
-                                            words,
-                                            settings,
-                                            self.chapter_titles.clone(),
-                                            self.theme.clone(),
-                                        );
-
-                                        if let Some(book_id) = &self.book_id {
-                                            if let Some(session) =
-                                                reader_core::load_spritz_session(book_id)
-                                            {
-                                                spritz.current_index = session.word_index;
-                                                spritz.wpm = session.wpm;
-                                            }
-                                        }
-
-                                        self.spritz = Some(spritz);
-                                        self.mode = Mode::Spritz;
-                                    }
-                                    Mode::Spritz => {
-                                        if let Some(spritz) = &self.spritz {
-                                            if let Some(book_id) = &self.book_id {
-                                                let session = reader_core::SpritzSession {
-                                                    book_id: book_id.clone(),
-                                                    word_index: spritz.current_index,
-                                                    wpm: spritz.wpm,
-                                                    saved_at: Utc::now().to_rfc3339(),
-                                                };
-                                                let _ = reader_core::save_spritz_session(&session);
-                                            }
-                                        }
-                                        self.spritz = None;
-                                        self.mode = Mode::Reader;
-                                    }
-                                    Mode::Toc => {}
-                                },
-
-                                KeyCode::Char('c')
-                                    if key
-                                        .modifiers
-                                        .contains(crossterm::event::KeyModifiers::CONTROL) =>
-                                {
-                                    exit = true
-                                }
-                                KeyCode::Char('j') | KeyCode::Down => {
-                                    if key
-                                        .modifiers
-                                        .contains(crossterm::event::KeyModifiers::CONTROL)
-                                    {
-                                        if let Mode::Spritz = self.mode {
-                                            if let Some(spritz) = &mut self.spritz {
-                                                spritz.fast_forward(10);
-                                            }
-                                        }
-                                    } else {
-                                        match self.mode {
-                                            Mode::Reader => {
-                                                view.down(1);
-                                                view.last_key = Some("j/down".into());
-                                            }
-                                            Mode::Toc => {
-                                                if let Some(t) = &mut self.toc {
-                                                    t.down();
-                                                }
-                                            }
-                                            Mode::Spritz => {
-                                                if let Some(spritz) = &mut self.spritz {
-                                                    spritz.fast_forward(1);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                KeyCode::Char('k') | KeyCode::Up => {
-                                    if key
-                                        .modifiers
-                                        .contains(crossterm::event::KeyModifiers::CONTROL)
-                                    {
-                                        if let Mode::Spritz = self.mode {
-                                            if let Some(spritz) = &mut self.spritz {
-                                                spritz.rewind(10);
-                                            }
-                                        }
-                                    } else {
-                                        match self.mode {
-                                            Mode::Reader => {
-                                                view.up(1);
-                                                view.last_key = Some("k/up".into());
-                                            }
-                                            Mode::Toc => {
-                                                if let Some(t) = &mut self.toc {
-                                                    t.up();
-                                                }
-                                            }
-                                            Mode::Spritz => {
-                                                if let Some(spritz) = &mut self.spritz {
-                                                    spritz.rewind(1);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                KeyCode::Char('h') | KeyCode::Left => match self.mode {
-                                    Mode::Reader => {
-                                        width = width.saturating_sub(2);
-                                        let inner = ReaderView::inner_size(
-                                            terminal.size()?,
-                                            width,
-                                            view.two_pane,
-                                        );
-                                        view.reflow(&self.blocks, inner);
-                                        last_inner = (inner.width, inner.height);
-                                        view.last_key = Some("h/left".into());
-                                    }
-                                    Mode::Spritz => {
-                                        width = width.saturating_sub(2);
-                                        last_inner = (width, last_inner.1);
-                                    }
-                                    Mode::Toc => {}
-                                },
-                                KeyCode::Char('l') | KeyCode::Right => match self.mode {
-                                    Mode::Reader => {
-                                        width = width.saturating_add(2);
-                                        let inner = ReaderView::inner_size(
-                                            terminal.size()?,
-                                            width,
-                                            view.two_pane,
-                                        );
-                                        view.reflow(&self.blocks, inner);
-                                        last_inner = (inner.width, inner.height);
-                                        view.last_key = Some("l/right".into());
-                                    }
-                                    Mode::Spritz => {
-                                        width = width.saturating_add(2);
-                                        last_inner = (width, last_inner.1);
-                                    }
-                                    Mode::Toc => {}
-                                },
-                                KeyCode::PageDown => {
-                                    if let Mode::Reader = self.mode {
-                                        view.down((height / 2) as usize);
-                                        view.last_key = Some("PgDn".into());
-                                    }
-                                }
-                                KeyCode::PageUp => {
-                                    if let Mode::Reader = self.mode {
-                                        view.up((height / 2) as usize);
-                                        view.last_key = Some("PgUp".into());
-                                    }
-                                }
-                                KeyCode::Char('J') => {
-                                    if let Mode::Reader = self.mode {
-                                        view.justify = !view.justify;
-                                        save_settings(
-                                            view.justify,
-                                            view.two_pane,
-                                            &SpritzSettings::default(),
-                                        );
-                                        view.last_key = Some("J toggle".into());
-                                        let inner = ReaderView::inner_size(
-                                            terminal.size()?,
-                                            width,
-                                            view.two_pane,
-                                        );
-                                        view.reflow(&self.blocks, inner);
-                                        last_inner = (inner.width, inner.height);
-                                    }
-                                }
-                                KeyCode::Char('b') => {
-                                    if let Mode::Reader = self.mode {
-                                        view.two_pane = !view.two_pane;
-                                        // Align to left page when entering spread mode
-                                        if view.two_pane {
-                                            view.current =
-                                                view.current.saturating_sub(view.current % 2);
-                                        }
-                                        save_settings(
-                                            view.justify,
-                                            view.two_pane,
-                                            &SpritzSettings::default(),
-                                        );
-                                        let inner = ReaderView::inner_size(
-                                            terminal.size()?,
-                                            width,
-                                            view.two_pane,
-                                        );
-                                        view.reflow(&self.blocks, inner);
-                                        last_inner = (inner.width, inner.height);
-                                        view.last_key = Some(
-                                            if view.two_pane {
-                                                "b spread on"
-                                            } else {
-                                                "b spread off"
-                                            }
-                                            .into(),
-                                        );
-                                    }
-                                }
-                                KeyCode::Char(' ') => {
-                                    if let Mode::Spritz = self.mode {
-                                        if let Some(spritz) = &mut self.spritz {
-                                            spritz.toggle_play();
-                                        }
-                                    }
-                                }
-
-                                KeyCode::Char('r') => {
-                                    if let Mode::Spritz = self.mode {
-                                        if let Some(spritz) = &mut self.spritz {
-                                            spritz.jump_to_chapter_start();
-                                        }
-                                    }
-                                }
-                                KeyCode::Char('f') => {
-                                    if let Mode::Spritz = self.mode {
-                                        if let Some(spritz) = &mut self.spritz {
-                                            spritz.jump_to_chapter_end();
-                                        }
-                                    }
-                                }
-                                KeyCode::Char('+') | KeyCode::Char('=') => {
-                                    if let Mode::Spritz = self.mode {
-                                        if let Some(spritz) = &mut self.spritz {
-                                            spritz.adjust_wpm(10);
-                                        }
-                                    }
-                                }
-                                KeyCode::Char('-') | KeyCode::Char('_') => {
-                                    if let Mode::Spritz = self.mode {
-                                        if let Some(spritz) = &mut self.spritz {
-                                            spritz.adjust_wpm(-10);
-                                        }
-                                    }
-                                }
-                                KeyCode::Char(']') => {
-                                    if let Mode::Spritz = self.mode {
-                                        if let Some(spritz) = &mut self.spritz {
-                                            spritz.adjust_wpm(50);
-                                        }
-                                    }
-                                }
-                                KeyCode::Char('[') => {
-                                    if let Mode::Spritz = self.mode {
-                                        if let Some(spritz) = &mut self.spritz {
-                                            spritz.adjust_wpm(-50);
-                                        }
-                                    }
-                                }
-
-                                KeyCode::Char('?') => {
-                                    self.show_help = !self.show_help;
-                                }
-
-                                _ => {}
-                            }
-                        }
-                        Ok(_) => {}
-                        Err(_) => {
-                            exit = true;
+                            handle_mouse_selection(
+                                &mut self,
+                                &mut view,
+                                last_frame,
+                                width,
+                                mouse,
+                                &mut selection_anchor,
+                                &mut selection_active,
+                            );
                         }
                     }
-                }
+                    Ok(Event::Key(key)) => {
+                        if let Some(command) = Command::from_key(&self, key) {
+                            if self.apply_command(
+                                command,
+                                &mut view,
+                                &mut width,
+                                height,
+                                &mut last_inner,
+                                &mut terminal,
+                            )? == CommandOutcome::Exit
+                            {
+                                exit = true;
+                            }
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(_) => {
+                        exit = true;
+                    }
+                },
                 Ok(false) => {}
                 Err(_) => {
                     exit = true;
