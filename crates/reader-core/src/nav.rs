@@ -70,11 +70,7 @@ fn parse_epub3_nav_entries(html: &str, nav_path: &Path) -> Vec<TocEntry> {
             if let Some((href, label)) = anchor_href_label(anchor.as_node()) {
                 let full = normalize_href_with_fragment(nav_path, &href);
                 if !label.is_empty() {
-                    entries.push(TocEntry {
-                        href: full,
-                        label,
-                        level: 0,
-                    });
+                    entries.push(TocEntry::new(full, label, 0));
                 }
             }
         }
@@ -85,9 +81,9 @@ fn parse_epub3_nav_entries(html: &str, nav_path: &Path) -> Vec<TocEntry> {
 fn parse_epub3_nav(html: &str, nav_path: &Path) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for entry in parse_epub3_nav_entries(html, nav_path) {
-        if !entry.label.is_empty() && !entry.href.is_empty() {
-            let key = strip_fragment(&entry.href).to_string();
-            map.entry(key).or_insert(entry.label);
+        if !entry.label().is_empty() && !entry.href().is_empty() {
+            let key = strip_fragment(entry.href()).to_string();
+            map.entry(key).or_insert_with(|| entry.label().to_string());
         }
     }
     map
@@ -117,11 +113,11 @@ fn parse_epub2_ncx_entries(xml: &str, ncx_path: &Path) -> Vec<TocEntry> {
                                 let href = val.into_owned();
                                 if let Some(label) = current_label.clone() {
                                     let full = normalize_href_with_fragment(ncx_path, &href);
-                                    entries.push(TocEntry {
-                                        href: full,
+                                    entries.push(TocEntry::new(
+                                        full,
                                         label,
-                                        level: depth.saturating_sub(1),
-                                    });
+                                        depth.saturating_sub(1),
+                                    ));
                                 }
                             }
                         }
@@ -145,9 +141,9 @@ fn parse_epub2_ncx_entries(xml: &str, ncx_path: &Path) -> Vec<TocEntry> {
 fn parse_epub2_ncx(xml: &str, ncx_path: &Path) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for entry in parse_epub2_ncx_entries(xml, ncx_path) {
-        if !entry.label.is_empty() && !entry.href.is_empty() {
-            let key = strip_fragment(&entry.href).to_string();
-            map.entry(key).or_insert(entry.label);
+        if !entry.label().is_empty() && !entry.href().is_empty() {
+            let key = strip_fragment(entry.href()).to_string();
+            map.entry(key).or_insert_with(|| entry.label().to_string());
         }
     }
     map
@@ -346,11 +342,7 @@ fn parse_nav_list(list: &NodeRef, nav_path: &Path, level: usize, out: &mut Vec<T
         if let Some((href, label)) = find_li_link_label(&child) {
             let full = normalize_href_with_fragment(nav_path, &href);
             if !label.is_empty() {
-                out.push(TocEntry {
-                    href: full,
-                    label,
-                    level,
-                });
+                out.push(TocEntry::new(full, label, level));
             }
         }
         for nested in child.children() {
@@ -433,14 +425,14 @@ mod tests {
         let nav_path = Path::new("OEBPS/nav/nav.xhtml");
         let entries = parse_epub3_nav_entries(html, nav_path);
         assert_eq!(entries.len(), 3);
-        assert_eq!(entries[0].label, "Chapter 1");
-        assert_eq!(entries[0].level, 0);
-        assert_eq!(entries[0].href, "OEBPS/text/ch1.xhtml#c1");
-        assert_eq!(entries[1].label, "Section 1");
-        assert_eq!(entries[1].level, 1);
-        assert_eq!(entries[1].href, "OEBPS/text/ch1.xhtml#c1-1");
-        assert_eq!(entries[2].label, "Chapter 2");
-        assert_eq!(entries[2].level, 0);
+        assert_eq!(entries[0].label(), "Chapter 1");
+        assert_eq!(entries[0].level(), 0);
+        assert_eq!(entries[0].href(), "OEBPS/text/ch1.xhtml#c1");
+        assert_eq!(entries[1].label(), "Section 1");
+        assert_eq!(entries[1].level(), 1);
+        assert_eq!(entries[1].href(), "OEBPS/text/ch1.xhtml#c1-1");
+        assert_eq!(entries[2].label(), "Chapter 2");
+        assert_eq!(entries[2].level(), 0);
     }
 
     #[test]
@@ -462,11 +454,11 @@ mod tests {
         let ncx_path = Path::new("OEBPS/toc.ncx");
         let entries = parse_epub2_ncx_entries(xml, ncx_path);
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].label, "Chapter 1");
-        assert_eq!(entries[0].level, 0);
-        assert_eq!(entries[0].href, "OEBPS/text/ch1.xhtml#c1");
-        assert_eq!(entries[1].label, "Section 1");
-        assert_eq!(entries[1].level, 1);
-        assert_eq!(entries[1].href, "OEBPS/text/ch1.xhtml#c1-1");
+        assert_eq!(entries[0].label(), "Chapter 1");
+        assert_eq!(entries[0].level(), 0);
+        assert_eq!(entries[0].href(), "OEBPS/text/ch1.xhtml#c1");
+        assert_eq!(entries[1].label(), "Section 1");
+        assert_eq!(entries[1].level(), 1);
+        assert_eq!(entries[1].href(), "OEBPS/text/ch1.xhtml#c1-1");
     }
 }

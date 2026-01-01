@@ -767,14 +767,9 @@ where
         Some((id, data)) => (id, Some(data)),
         None => (src.clone(), None),
     };
-    Some(Block::Image(ImageBlock {
-        id,
-        data,
-        alt,
-        caption: None,
-        width,
-        height,
-    }))
+    Some(Block::Image(ImageBlock::new(
+        id, data, alt, None, width, height,
+    )))
 }
 
 fn figure_block<F, L>(
@@ -820,14 +815,9 @@ where
         Some((id, data)) => (id, Some(data)),
         None => (src.clone(), None),
     };
-    Some(Block::Image(ImageBlock {
-        id,
-        data,
-        alt,
-        caption,
-        width,
-        height,
-    }))
+    Some(Block::Image(ImageBlock::new(
+        id, data, alt, caption, width, height,
+    )))
 }
 
 fn image_label_text(attrs: &kuchiki::Attributes) -> Option<String> {
@@ -915,10 +905,7 @@ where
                         if !cell.trim().is_empty() {
                             has_text = true;
                         }
-                        cells.push(TableCell {
-                            text: cell,
-                            is_header: tag == "th",
-                        });
+                        cells.push(TableCell::new(cell, tag == "th"));
                     }
                 }
             }
@@ -935,7 +922,7 @@ where
             Some(Block::Paragraph(fallback))
         }
     } else {
-        Some(Block::Table(TableBlock { rows }))
+        Some(Block::Table(TableBlock::new(rows)))
     }
 }
 
@@ -1005,17 +992,18 @@ pub fn postprocess_blocks(mut blocks: Vec<Block>) -> Vec<Block> {
                 *t = clean_text(t, true);
             }
             Block::Image(ref mut img) => {
-                if let Some(caption) = img.caption.as_mut() {
+                if let Some(caption) = img.caption_mut() {
                     *caption = clean_text(caption, false);
                 }
-                if let Some(alt) = img.alt.as_mut() {
+                if let Some(alt) = img.alt_mut() {
                     *alt = clean_text(alt, false);
                 }
             }
             Block::Table(ref mut table) => {
-                for row in &mut table.rows {
+                for row in table.rows_mut() {
                     for cell in row {
-                        cell.text = clean_text(&cell.text, true);
+                        let cleaned = clean_text(cell.text(), true);
+                        *cell.text_mut() = cleaned;
                     }
                 }
             }
@@ -1111,12 +1099,13 @@ mod tests {
         let Block::Table(table) = &blocks[0] else {
             panic!("expected table block");
         };
-        assert_eq!(table.rows.len(), 2);
-        assert_eq!(table.rows[0].len(), 2);
-        assert_eq!(table.rows[0][0].text, "Head");
-        assert_eq!(table.rows[0][1].text, "Value");
-        assert_eq!(table.rows[1][0].text, "A");
-        assert_eq!(table.rows[1][1].text, "B");
+        let rows = table.rows();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].len(), 2);
+        assert_eq!(rows[0][0].text(), "Head");
+        assert_eq!(rows[0][1].text(), "Value");
+        assert_eq!(rows[1][0].text(), "A");
+        assert_eq!(rows[1][1].text(), "B");
     }
 
     #[test]

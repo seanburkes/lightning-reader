@@ -160,11 +160,7 @@ pub fn extract_words(blocks: &[Block]) -> Vec<WordToken> {
                 }
             }
             Block::Image(image) => {
-                let label = image
-                    .caption
-                    .as_ref()
-                    .or(image.alt.as_ref())
-                    .map(|s| strip_style_markers(s));
+                let label = image.caption().or(image.alt()).map(strip_style_markers);
                 if let Some(label) = label {
                     for word in label.split_whitespace() {
                         let token = WordToken::from_word(word, current_chapter);
@@ -173,9 +169,9 @@ pub fn extract_words(blocks: &[Block]) -> Vec<WordToken> {
                 }
             }
             Block::Table(table) => {
-                for row in &table.rows {
+                for row in table.rows() {
                     for cell in row {
-                        let cleaned = strip_style_markers(&cell.text);
+                        let cleaned = strip_style_markers(cell.text());
                         for word in cleaned.split_whitespace() {
                             let token = WordToken::from_word(word, current_chapter);
                             words.push(token);
@@ -487,16 +483,8 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
                     for span in line.spans {
                         segs.push(Segment {
                             text: span.text,
-                            fg: span.fg.map(|c| crate::types::RgbColor {
-                                r: c.r,
-                                g: c.g,
-                                b: c.b,
-                            }),
-                            bg: span.bg.map(|c| crate::types::RgbColor {
-                                r: c.r,
-                                g: c.g,
-                                b: c.b,
-                            }),
+                            fg: span.fg.map(|c| crate::types::RgbColor::new(c.r, c.g, c.b)),
+                            bg: span.bg.map(|c| crate::types::RgbColor::new(c.r, c.g, c.b)),
                             style: TextStyle::default(),
                             link: None,
                         });
@@ -524,20 +512,23 @@ pub fn paginate_with_justify(blocks: &[Block], size: Size, justify: bool) -> Pag
                 if let Some(start_idx) = pending_chapter_start.take() {
                     chapter_starts.push(start_idx);
                 }
-                let mut caption = image.caption.clone().or_else(|| image.alt.clone());
-                if caption.is_none() && image.data.is_none() {
+                let mut caption = image
+                    .caption()
+                    .map(str::to_string)
+                    .or_else(|| image.alt().map(str::to_string));
+                if caption.is_none() && image.data().is_none() {
                     caption = Some("Image".to_string());
                 }
-                if image.data.is_some() {
+                if image.data().is_some() {
                     let cols = size.width.max(1);
                     let max_rows = size.height.saturating_sub(2).max(3);
-                    let rows = image_rows_from_dims(image.width, image.height, cols, max_rows);
+                    let rows = image_rows_from_dims(image.width(), image.height(), cols, max_rows);
                     let blank = " ".repeat(cols as usize);
                     for row in 0..rows {
                         let mut line = StyledLine::from_plain(blank.clone());
                         if row == 0 {
                             line.image = Some(ImagePlacement {
-                                id: image.id.clone(),
+                                id: image.id().to_string(),
                                 cols,
                                 rows,
                             });
@@ -596,10 +587,10 @@ fn wrap_styled_text(text: &str, width: usize) -> WrappedLines {
 
 fn render_table(table: &TableBlock, width: usize) -> Vec<(StyledLine, Vec<String>)> {
     let width = width.max(1);
-    if table.rows.is_empty() {
+    if table.rows().is_empty() {
         return Vec::new();
     }
-    let col_count = table.rows.iter().map(|row| row.len()).max().unwrap_or(0);
+    let col_count = table.rows().iter().map(|row| row.len()).max().unwrap_or(0);
     if col_count == 0 {
         return Vec::new();
     }
@@ -610,14 +601,14 @@ fn render_table(table: &TableBlock, width: usize) -> Vec<(StyledLine, Vec<String
     let max_widths = table_max_widths(table, col_count);
     let col_widths = compute_column_widths(&max_widths, available_cells);
 
-    let header_end = table_header_end(&table.rows);
+    let header_end = table_header_end(table.rows());
     let mut out: Vec<(StyledLine, Vec<String>)> = Vec::new();
 
-    for (row_idx, row) in table.rows.iter().enumerate() {
-        let row_has_header = row.iter().any(|cell| cell.is_header);
+    for (row_idx, row) in table.rows().iter().enumerate() {
+        let row_has_header = row.iter().any(|cell| cell.is_header());
         let mut wrapped_cells: Vec<WrappedLines> = Vec::with_capacity(col_count);
         for (col, col_width) in col_widths.iter().enumerate().take(col_count) {
-            let text = row.get(col).map(|cell| cell.text.trim()).unwrap_or("");
+            let text = row.get(col).map(|cell| cell.text().trim()).unwrap_or("");
             let wrapped = wrap_styled_text(text, (*col_width).max(1));
             wrapped_cells.push(wrapped);
         }
@@ -703,7 +694,7 @@ fn table_header_end(rows: &[Vec<TableCell>]) -> Option<usize> {
     let mut last_header: Option<usize> = None;
     let mut seen_header = false;
     for (idx, row) in rows.iter().enumerate() {
-        let is_header = row.iter().any(|cell| cell.is_header);
+        let is_header = row.iter().any(|cell| cell.is_header());
         if is_header {
             last_header = Some(idx);
             seen_header = true;
@@ -732,12 +723,12 @@ fn table_rule_line(widths: &[usize], sep: &str) -> StyledLine {
 
 fn table_max_widths(table: &TableBlock, cols: usize) -> Vec<usize> {
     let mut widths = vec![0usize; cols];
-    for row in &table.rows {
+    for row in table.rows() {
         for (idx, cell) in row.iter().enumerate() {
             if idx >= cols {
                 continue;
             }
-            let plain = strip_style_markers(&cell.text);
+            let plain = strip_style_markers(cell.text());
             let cell_max = plain
                 .split('\n')
                 .map(|line| line.graphemes(true).count())

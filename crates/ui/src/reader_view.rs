@@ -210,11 +210,11 @@ impl ReaderView {
             let ReaderBlock::Image(image) = block else {
                 continue;
             };
-            let Some(data) = &image.data else {
+            let Some(data) = image.data() else {
                 continue;
             };
-            if !self.image_map.contains_key(&image.id) {
-                self.image_map.insert(image.id.clone(), data.clone());
+            if !self.image_map.contains_key(image.id()) {
+                self.image_map.insert(image.id().to_string(), data.to_vec());
             }
         }
     }
@@ -698,10 +698,10 @@ impl ReaderView {
     fn segment_style(seg: &Segment) -> Style {
         let mut style = Style::default();
         if let Some(rgb) = &seg.fg {
-            style = style.fg(Color::Rgb(rgb.r, rgb.g, rgb.b));
+            style = style.fg(Color::Rgb(rgb.r(), rgb.g(), rgb.b()));
         }
         if let Some(rgb) = &seg.bg {
-            style = style.bg(Color::Rgb(rgb.r, rgb.g, rgb.b));
+            style = style.bg(Color::Rgb(rgb.r(), rgb.g(), rgb.b()));
         }
         if seg.style.bold {
             style = style.add_modifier(Modifier::BOLD);

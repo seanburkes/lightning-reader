@@ -243,28 +243,22 @@ fn read_opf(zip: &mut ZipArchive<File>, opf_path: &Path) -> Result<OpfResult, Re
     let mut title_entries: Vec<TitleEntry> = state
         .titles
         .into_iter()
-        .map(|t| TitleEntry {
-            text: t.text,
-            kind: t.kind,
-        })
+        .map(|t| TitleEntry::new(t.text, t.kind))
         .collect();
     if !title_entries.is_empty()
         && !title_entries
             .iter()
-            .any(|t| matches!(t.kind, TitleKind::Main))
+            .any(|t| matches!(t.kind(), TitleKind::Main))
     {
-        title_entries[0].kind = TitleKind::Main;
+        title_entries[0].set_kind(TitleKind::Main);
     }
     if let Some(subtitle) = state.meta_subtitle {
         if !subtitle.is_empty()
             && !title_entries.iter().any(|t| {
-                matches!(t.kind, TitleKind::Subtitle) && t.text.eq_ignore_ascii_case(&subtitle)
+                matches!(t.kind(), TitleKind::Subtitle) && t.text().eq_ignore_ascii_case(&subtitle)
             })
         {
-            title_entries.push(TitleEntry {
-                text: subtitle,
-                kind: TitleKind::Subtitle,
-            });
+            title_entries.push(TitleEntry::new(subtitle, TitleKind::Subtitle));
         }
     }
 
@@ -277,10 +271,7 @@ fn read_opf(zip: &mut ZipArchive<File>, opf_path: &Path) -> Result<OpfResult, Re
             creator.roles.push("aut".to_string());
         }
         dedupe_roles(&mut creator.roles);
-        creator_entries.push(CreatorEntry {
-            name: creator.name,
-            roles: creator.roles,
-        });
+        creator_entries.push(CreatorEntry::new(creator.name, creator.roles));
     }
 
     let series = resolve_series_info(
@@ -288,11 +279,7 @@ fn read_opf(zip: &mut ZipArchive<File>, opf_path: &Path) -> Result<OpfResult, Re
         state.calibre_series_index,
         &state.collections,
     );
-    let metadata = BookMetadata {
-        titles: title_entries,
-        creators: creator_entries,
-        series,
-    };
+    let metadata = BookMetadata::new(title_entries, creator_entries, series);
     Ok((metadata, state.manifest, state.spine_ids, state.spine_toc))
 }
 
@@ -732,10 +719,7 @@ fn resolve_series_info(
 ) -> Option<SeriesInfo> {
     if let Some(name) = calibre_series {
         if !name.is_empty() {
-            return Some(SeriesInfo {
-                name,
-                index: calibre_series_index,
-            });
+            return Some(SeriesInfo::new(name, calibre_series_index));
         }
     }
 
@@ -756,10 +740,7 @@ fn resolve_series_info(
     if candidate.name.is_empty() {
         return None;
     }
-    Some(SeriesInfo {
-        name: candidate.name.clone(),
-        index: candidate.position,
-    })
+    Some(SeriesInfo::new(candidate.name.clone(), candidate.position))
 }
 
 fn push_role(roles: &mut Vec<String>, role: String) {

@@ -334,14 +334,15 @@ impl App {
         }
     }
     pub fn new_with_document(document: Document, initial_page: usize) -> Self {
-        let mut app =
-            Self::new_with_blocks_at(document.blocks, initial_page, document.chapter_titles);
-        app.chapter_hrefs = document.chapter_hrefs;
-        app.toc_entries = document.toc_entries;
-        app.book_title = document.info.title;
-        app.author = document.info.author;
-        app.book_id = Some(document.info.id);
-        app.outlines = document.outlines;
+        let (info, blocks, chapter_titles, chapter_hrefs, toc_entries, outlines) =
+            document.into_parts();
+        let mut app = Self::new_with_blocks_at(blocks, initial_page, chapter_titles);
+        app.chapter_hrefs = chapter_hrefs;
+        app.toc_entries = toc_entries;
+        app.book_title = info.title().map(str::to_string);
+        app.author = info.author().map(str::to_string);
+        app.book_id = Some(info.id().to_string());
+        app.outlines = outlines;
         if !app.chapter_titles.is_empty() {
             app.total_chapters = Some(app.chapter_titles.len());
         }
@@ -523,12 +524,12 @@ impl App {
         if !self.toc_entries.is_empty() {
             let mut items = Vec::new();
             for entry in &self.toc_entries {
-                let page = view.page_for_href(&entry.href);
+                let page = view.page_for_href(entry.href());
                 items.push(TocItem {
-                    label: entry.label.clone(),
-                    level: entry.level,
+                    label: entry.label().to_string(),
+                    level: entry.level(),
                     page,
-                    href: Some(entry.href.clone()),
+                    href: Some(entry.href().to_string()),
                 });
             }
             return items;
@@ -638,12 +639,12 @@ impl App {
         let Some(book_id) = &self.book_id else {
             return;
         };
-        let session = reader_core::SpritzSession {
-            book_id: book_id.clone(),
-            word_index: spritz.current_index,
-            wpm: spritz.wpm,
-            saved_at: Utc::now().to_rfc3339(),
-        };
+        let session = reader_core::SpritzSession::new(
+            book_id.clone(),
+            spritz.current_index,
+            spritz.wpm,
+            Utc::now().to_rfc3339(),
+        );
         let _ = reader_core::save_spritz_session(&session);
     }
 
@@ -659,8 +660,8 @@ impl App {
 
         if let Some(book_id) = &self.book_id {
             if let Some(session) = reader_core::load_spritz_session(book_id) {
-                spritz.current_index = session.word_index;
-                spritz.wpm = session.wpm;
+                spritz.current_index = session.word_index();
+                spritz.wpm = session.wpm();
             }
         }
 

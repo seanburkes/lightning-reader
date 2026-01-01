@@ -31,15 +31,15 @@ impl TextFile {
             .or_else(|| first_heading_title(&blocks))
             .unwrap_or_else(|| "Untitled".to_string());
         let path_str = self.path.to_string_lossy().into_owned();
-        let info = DocumentInfo {
-            id: format!("path:{}", path_str),
-            path: path_str,
-            title: Some(title.clone()),
-            subtitle: None,
-            author: None,
-            metadata: None,
+        let info = DocumentInfo::new(
+            format!("path:{}", path_str),
+            path_str,
+            Some(title.clone()),
+            None,
+            None,
+            None,
             format,
-        };
+        );
         Document::new(
             info,
             blocks,

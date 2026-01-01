@@ -128,22 +128,17 @@ fn has_content(blocks: &[reader_core::types::Block]) -> bool {
         }),
         reader_core::types::Block::Code { text, .. } => !text.trim().is_empty(),
         reader_core::types::Block::Image(image) => {
-            image.data.as_ref().map(|d| !d.is_empty()).unwrap_or(false)
+            image.data().map(|d| !d.is_empty()).unwrap_or(false)
                 || image
-                    .caption
-                    .as_ref()
+                    .caption()
                     .map(|t| !t.trim().is_empty())
                     .unwrap_or(false)
-                || image
-                    .alt
-                    .as_ref()
-                    .map(|t| !t.trim().is_empty())
-                    .unwrap_or(false)
+                || image.alt().map(|t| !t.trim().is_empty()).unwrap_or(false)
         }
         reader_core::types::Block::Table(table) => table
-            .rows
+            .rows()
             .iter()
-            .any(|row| row.iter().any(|cell| !cell.text.trim().is_empty())),
+            .any(|row| row.iter().any(|cell| !cell.text().trim().is_empty())),
     })
 }
 
@@ -344,12 +339,13 @@ fn main() {
         match reader_core::text::TextFile::open(path) {
             Ok(text_doc) => {
                 let document = text_doc.to_document();
-                let book_id = BookId {
-                    id: format!("path:{}", path.display()),
-                    path: path.display().to_string(),
-                    title: document.info.title.clone(),
+                let title = document.info().title().map(str::to_string);
+                let book_id = BookId::new(
+                    format!("path:{}", path.display()),
+                    path.display().to_string(),
+                    title,
                     format,
-                };
+                );
                 run_reader(document, book_id, 0);
                 return;
             }
@@ -395,12 +391,12 @@ fn stream_epub_lazy(
     format: DocumentFormat,
 ) -> Result<ChapterStream, reader_core::epub::ReaderError> {
     let book = EpubBook::open(path)?;
-    let book_id = BookId {
-        id: format!("path:{}", path.display()),
-        path: path.display().to_string(),
-        title: book.title.clone(),
+    let book_id = BookId::new(
+        format!("path:{}", path.display()),
+        path.display().to_string(),
+        book.title.clone(),
         format,
-    };
+    );
     let document_info =
         DocumentInfo::from_book_id(&book_id, book.author.clone(), Some(book.metadata.clone()));
 
@@ -587,12 +583,12 @@ fn stream_pdf(
         });
     }
 
-    let book_id = BookId {
-        id: format!("path:{}", path.display()),
-        path: path.display().to_string(),
+    let book_id = BookId::new(
+        format!("path:{}", path.display()),
+        path.display().to_string(),
         title,
-        format: DocumentFormat::Pdf,
-    };
+        DocumentFormat::Pdf,
+    );
     let info = DocumentInfo::from_book_id(&book_id, summary.author.clone(), None);
     let document = Document::new(info, blocks, chapter_titles, chapter_hrefs, Vec::new());
     let truncated = target_pages < total_pages_actual;
@@ -610,14 +606,11 @@ fn stream_pdf(
 fn run_reader(document: Document, book_id: BookId, selected_index: usize) {
     // Load last location and update initial spine index
     let mut last = load_state(&book_id)
-        .map(|r| r.last_location)
-        .unwrap_or(Location {
-            spine_index: 0,
-            offset: 0,
-        });
-    last.spine_index = selected_index;
+        .map(|r| r.last_location().clone())
+        .unwrap_or_else(|| Location::new(0, 0));
+    last.set_spine_index(selected_index);
 
-    let mut app = ui::app::App::new_with_document(document, last.offset);
+    let mut app = ui::app::App::new_with_document(document, last.offset());
     apply_theme_config(&mut app);
 
     let current_idx = match app.run() {
@@ -629,12 +622,8 @@ fn run_reader(document: Document, book_id: BookId, selected_index: usize) {
     };
 
     // Save last location using current page index
-    last.offset = current_idx;
-    let rec = AppStateRecord {
-        book: book_id,
-        last_location: last,
-        bookmarks: vec![],
-    };
+    last.set_offset(current_idx);
+    let rec = AppStateRecord::new(book_id, last, vec![]);
     let _ = save_state(&rec);
 
     eprintln!("Run with: cargo run -p librarian [path_to_epub|path_to_txt|path_to_md]  # default docs/alice.epub");
@@ -655,16 +644,13 @@ fn run_reader_chapter_streaming(
     } = stream;
     // Load last location and update initial spine index
     let mut last = load_state(&book_id)
-        .map(|r| r.last_location)
-        .unwrap_or(Location {
-            spine_index: 0,
-            offset: 0,
-        });
-    last.spine_index = selected_index;
+        .map(|r| r.last_location().clone())
+        .unwrap_or_else(|| Location::new(0, 0));
+    last.set_spine_index(selected_index);
 
     let mut app = ui::app::App::new_with_document_chapter_streaming(
         document,
-        last.offset,
+        last.offset(),
         incoming,
         total_chapters,
         prefetch_tx,
@@ -682,12 +668,8 @@ fn run_reader_chapter_streaming(
     };
 
     // Save last location using current page index
-    last.offset = current_idx;
-    let rec = AppStateRecord {
-        book: book_id,
-        last_location: last,
-        bookmarks: vec![],
-    };
+    last.set_offset(current_idx);
+    let rec = AppStateRecord::new(book_id, last, vec![]);
     let _ = save_state(&rec);
 
     eprintln!(
@@ -706,16 +688,13 @@ fn run_reader_streaming(
 ) {
     // Load last location and update initial spine index
     let mut last = load_state(&book_id)
-        .map(|r| r.last_location)
-        .unwrap_or(Location {
-            spine_index: 0,
-            offset: 0,
-        });
-    last.spine_index = selected_index;
+        .map(|r| r.last_location().clone())
+        .unwrap_or_else(|| Location::new(0, 0));
+    last.set_spine_index(selected_index);
 
     let mut app = ui::app::App::new_with_document_streaming(
         document,
-        last.offset,
+        last.offset(),
         incoming,
         total_pages,
         prefetch_tx,
@@ -732,12 +711,8 @@ fn run_reader_streaming(
     };
 
     // Save last location using current page index
-    last.offset = current_idx;
-    let rec = AppStateRecord {
-        book: book_id,
-        last_location: last,
-        bookmarks: vec![],
-    };
+    last.set_offset(current_idx);
+    let rec = AppStateRecord::new(book_id, last, vec![]);
     let _ = save_state(&rec);
 
     eprintln!("Run with: cargo run -p librarian [path_to_epub|path_to_txt|path_to_md]  # default docs/alice.epub");

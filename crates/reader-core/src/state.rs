@@ -26,7 +26,7 @@ pub fn load_state(book: &BookId) -> Option<AppStateRecord> {
         let records: Vec<AppStateRecord> = serde_json::from_slice(&data).ok()?;
         if let Some(rec) = records
             .into_iter()
-            .find(|r| r.book.id == book.id || r.book.path == book.path)
+            .find(|r| r.book().id() == book.id() || r.book().path() == book.path())
         {
             return Some(rec);
         }
@@ -45,7 +45,7 @@ pub fn save_state(record: &AppStateRecord) -> std::io::Result<()> {
         .unwrap_or_default();
     if let Some(existing) = records
         .iter_mut()
-        .find(|r| r.book.id == record.book.id || r.book.path == record.book.path)
+        .find(|r| r.book().id() == record.book().id() || r.book().path() == record.book().path())
     {
         *existing = record.clone();
     } else {
@@ -68,7 +68,7 @@ pub fn load_spritz_session(book_id: &str) -> Option<SpritzSession> {
     for path in paths {
         if let Ok(data) = fs::read(&path) {
             if let Ok(sessions) = serde_json::from_slice::<Vec<SpritzSession>>(&data) {
-                if let Some(session) = sessions.into_iter().find(|s| s.book_id == book_id) {
+                if let Some(session) = sessions.into_iter().find(|s| s.book_id() == book_id) {
                     return Some(session);
                 }
             }
@@ -87,7 +87,10 @@ pub fn save_spritz_session(session: &SpritzSession) -> std::io::Result<()> {
         .and_then(|d| serde_json::from_slice(&d).ok())
         .unwrap_or_default();
 
-    if let Some(existing) = sessions.iter_mut().find(|s| s.book_id == session.book_id) {
+    if let Some(existing) = sessions
+        .iter_mut()
+        .find(|s| s.book_id() == session.book_id())
+    {
         *existing = session.clone();
     } else {
         sessions.push(session.clone());
