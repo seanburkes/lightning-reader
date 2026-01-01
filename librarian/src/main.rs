@@ -198,7 +198,7 @@ impl EpubChapterLoader {
             }
             let key = normalize_spine_href(&self.base, &item.href);
             let label = self.label_map.get(&key).cloned();
-            let html = match self.book.load_chapter(item) {
+            let html = match EpubBook::load_chapter(&mut self.book, &item) {
                 Ok(s) => s,
                 Err(_) => continue,
             };
@@ -222,7 +222,7 @@ impl EpubChapterLoader {
                         chapter_dir.join(src)
                     };
                     let resolved = normalize_epub_path(&resolved);
-                    let data = self.book.load_resource(&resolved).ok()?;
+                    let data = EpubBook::load_resource(&mut self.book, &resolved).ok()?;
                     Some((resolved.to_string_lossy().to_string(), data))
                 },
                 move |href| {
@@ -539,7 +539,7 @@ fn stream_pdf(
     ),
     reader_core::pdf::PdfError,
 > {
-    let loader = PdfLoader::open_with_backend(path, backend)?;
+    let mut loader = PdfLoader::open_with_backend(path, backend)?;
     let total_pages_actual = loader.page_count();
     let target_pages = page_limit
         .and_then(|m| {
@@ -560,7 +560,7 @@ fn stream_pdf(
     let mut blocks: Vec<reader_core::types::Block> = Vec::new();
     let mut chapter_titles: Vec<String> = Vec::new();
     let mut chapter_hrefs: Vec<String> = Vec::new();
-    for (idx, page_blocks) in loader.load_range(0, initial)? {
+    for (idx, page_blocks) in PdfLoader::load_range(&mut loader, 0, initial)? {
         if idx > 0 {
             blocks.push(reader_core::types::Block::Paragraph(String::new()));
             blocks.push(reader_core::types::Block::Paragraph("───".into()));
@@ -575,7 +575,7 @@ fn stream_pdf(
     let (prefetch_tx, prefetch_rx) = channel::<PrefetchRequest>();
     if initial < target_pages {
         let start_at = initial;
-        let loader = loader;
+        let mut loader = loader;
         thread::spawn(move || {
             let mut loaded: HashSet<usize> = (0..start_at).collect();
             let mut pending: VecDeque<usize> = (start_at..target_pages).collect();

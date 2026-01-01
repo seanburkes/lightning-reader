@@ -156,7 +156,7 @@ fn pdf_loader_loads_single_page_on_demand() {
     tmp.write_all(&pdf_bytes).expect("write pdf");
     let path = tmp.path().to_path_buf();
 
-    let loader = PdfLoader::open(&path).expect("open loader");
+    let mut loader = PdfLoader::open(&path).expect("open loader");
     assert_eq!(loader.page_count(), 2);
     let first = loader.load_page(0).expect("load page 0");
     assert!(first

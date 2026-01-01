@@ -1422,7 +1422,9 @@ mod tests {
     fn track_chapters() {
         let blocks = vec![
             Block::Paragraph("Chapter one text".to_string()),
+            Block::Paragraph(String::new()),
             Block::Paragraph("───".to_string()),
+            Block::Paragraph(String::new()),
             Block::Paragraph("Chapter two text".to_string()),
         ];
         let words = extract_words(&blocks);

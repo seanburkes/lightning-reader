@@ -1,4 +1,4 @@
-use std::{env, num::NonZeroUsize, path::Path, sync::Mutex};
+use std::{env, num::NonZeroUsize, path::Path};
 
 use lopdf::Document as LoDocument;
 use lru::LruCache;
@@ -212,7 +212,7 @@ impl LopdfBackend {
 pub struct PdfLoader {
     backend: Backend,
     summary: PdfSummary,
-    cache: Mutex<LruCache<usize, Vec<Block>>>,
+    cache: LruCache<usize, Vec<Block>>,
 }
 
 #[derive(Clone, Copy)]
@@ -245,7 +245,7 @@ impl PdfLoader {
                 Ok(Self {
                     summary: backend.summary.clone(),
                     backend: Backend::PdfRs(backend),
-                    cache: Mutex::new(LruCache::new(NonZeroUsize::new(8).unwrap())),
+                    cache: LruCache::new(NonZeroUsize::new(8).unwrap()),
                 })
             }
             PdfBackendKind::Lopdf => {
@@ -253,7 +253,7 @@ impl PdfLoader {
                 Ok(Self {
                     summary: backend.summary.clone(),
                     backend: Backend::Lopdf(backend),
-                    cache: Mutex::new(LruCache::new(NonZeroUsize::new(8).unwrap())),
+                    cache: LruCache::new(NonZeroUsize::new(8).unwrap()),
                 })
             }
         }
@@ -277,20 +277,20 @@ impl PdfLoader {
         }
     }
 
-    pub fn load_page(&self, page_index: usize) -> Result<Vec<Block>, PdfError> {
-        if let Some(cached) = self.cache.lock().unwrap().get(&page_index).cloned() {
+    pub fn load_page(&mut self, page_index: usize) -> Result<Vec<Block>, PdfError> {
+        if let Some(cached) = self.cache.get(&page_index).cloned() {
             return Ok(cached);
         }
         let blocks = match &self.backend {
             Backend::PdfRs(b) => b.load_page(page_index)?,
             Backend::Lopdf(b) => b.load_page(page_index)?,
         };
-        self.cache.lock().unwrap().put(page_index, blocks.clone());
+        self.cache.put(page_index, blocks.clone());
         Ok(blocks)
     }
 
     pub fn load_range(
-        &self,
+        &mut self,
         start: usize,
         count: usize,
     ) -> Result<Vec<(usize, Vec<Block>)>, PdfError> {
@@ -316,7 +316,7 @@ pub fn load_pdf_with_backend(
     max_pages: Option<usize>,
     backend: PdfBackendKind,
 ) -> Result<PdfDocument, PdfError> {
-    let loader = PdfLoader::open_with_backend(path, backend)?;
+    let mut loader = PdfLoader::open_with_backend(path, backend)?;
     let total_pages = loader.page_count();
     let to_load = max_pages
         .and_then(|m| if m == 0 { None } else { Some(m) })

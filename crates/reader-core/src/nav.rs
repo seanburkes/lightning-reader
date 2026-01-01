@@ -2,9 +2,9 @@ use kuchiki::{traits::*, NodeRef};
 use quick_xml::events::Event;
 use quick_xml::Reader as XmlReader;
 use std::collections::HashMap;
+use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::{cell::RefCell, fs::File};
 use zip::ZipArchive;
 
 use crate::epub::ReaderError;
@@ -171,23 +171,6 @@ pub fn read_nav_labels_with_hints(
     read_nav_labels_from_archive_inner(&mut zip, opf_path, nav_href, ncx_href)
 }
 
-pub fn read_nav_labels_from_archive(
-    zip: &RefCell<ZipArchive<File>>,
-    opf_path: &Path,
-) -> Result<HashMap<String, String>, ReaderError> {
-    read_nav_labels_from_archive_with_hints(zip, opf_path, None, None)
-}
-
-pub fn read_nav_labels_from_archive_with_hints(
-    zip: &RefCell<ZipArchive<File>>,
-    opf_path: &Path,
-    nav_href: Option<&str>,
-    ncx_href: Option<&str>,
-) -> Result<HashMap<String, String>, ReaderError> {
-    let mut borrow = zip.borrow_mut();
-    read_nav_labels_from_archive_inner(&mut borrow, opf_path, nav_href, ncx_href)
-}
-
 pub fn read_nav_entries(zip_path: &Path, opf_path: &Path) -> Result<Vec<TocEntry>, ReaderError> {
     read_nav_entries_with_hints(zip_path, opf_path, None, None)
 }
@@ -203,24 +186,7 @@ pub fn read_nav_entries_with_hints(
     read_nav_entries_from_archive_inner(&mut zip, opf_path, nav_href, ncx_href)
 }
 
-pub fn read_nav_entries_from_archive(
-    zip: &RefCell<ZipArchive<File>>,
-    opf_path: &Path,
-) -> Result<Vec<TocEntry>, ReaderError> {
-    read_nav_entries_from_archive_with_hints(zip, opf_path, None, None)
-}
-
-pub fn read_nav_entries_from_archive_with_hints(
-    zip: &RefCell<ZipArchive<File>>,
-    opf_path: &Path,
-    nav_href: Option<&str>,
-    ncx_href: Option<&str>,
-) -> Result<Vec<TocEntry>, ReaderError> {
-    let mut borrow = zip.borrow_mut();
-    read_nav_entries_from_archive_inner(&mut borrow, opf_path, nav_href, ncx_href)
-}
-
-fn read_nav_labels_from_archive_inner(
+pub(crate) fn read_nav_labels_from_archive_inner(
     zip: &mut ZipArchive<File>,
     opf_path: &Path,
     nav_href: Option<&str>,
@@ -275,7 +241,7 @@ fn read_nav_labels_from_archive_inner(
     Ok(HashMap::new())
 }
 
-fn read_nav_entries_from_archive_inner(
+pub(crate) fn read_nav_entries_from_archive_inner(
     zip: &mut ZipArchive<File>,
     opf_path: &Path,
     nav_href: Option<&str>,

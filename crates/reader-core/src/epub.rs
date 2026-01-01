@@ -605,8 +605,8 @@ impl EpubBook {
 
     pub fn toc_labels(&self) -> Result<std::collections::HashMap<String, String>, ReaderError> {
         // Read directly from the shared archive to avoid reopening
-        crate::nav::read_nav_labels_from_archive_with_hints(
-            &self.zip,
+        crate::nav::read_nav_labels_from_archive_inner(
+            &mut self.zip.borrow_mut(),
             &self.rootfile,
             self.nav_href.as_deref(),
             self.ncx_href.as_deref(),
@@ -614,8 +614,8 @@ impl EpubBook {
     }
 
     pub fn toc_entries(&self) -> Result<Vec<crate::types::TocEntry>, ReaderError> {
-        crate::nav::read_nav_entries_from_archive_with_hints(
-            &self.zip,
+        crate::nav::read_nav_entries_from_archive_inner(
+            &mut self.zip.borrow_mut(),
             &self.rootfile,
             self.nav_href.as_deref(),
             self.ncx_href.as_deref(),

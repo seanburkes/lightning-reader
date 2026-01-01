@@ -55,7 +55,6 @@ use reader_core::layout::{Page, Segment, Size, StyledLine};
 use reader_core::types::Block as ReaderBlock;
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::Arc;
 #[cfg(feature = "kitty-images")]
 use std::{env, io::Write};
 
@@ -78,7 +77,7 @@ pub struct ReaderView {
     pub total_chapters: Option<usize>,
     pub toc_overrides: Vec<reader_core::pdf::OutlineEntry>,
     pub selection: Option<SelectionRange>,
-    pub image_map: HashMap<String, Arc<Vec<u8>>>,
+    pub image_map: HashMap<String, Vec<u8>>,
     #[cfg(feature = "kitty-images")]
     image_cache: HashMap<String, KittyImage>,
     #[cfg(feature = "kitty-images")]
@@ -216,8 +215,7 @@ impl ReaderView {
                 continue;
             };
             if !self.image_map.contains_key(&image.id) {
-                self.image_map
-                    .insert(image.id.clone(), Arc::new(data.clone()));
+                self.image_map.insert(image.id.clone(), data.clone());
             }
         }
     }
@@ -629,8 +627,7 @@ impl ReaderView {
         write!(out, "\x1b_Ga=d\x1b\\")?;
         let placements = self.image_placements.clone();
         for placement in placements {
-            let data = self.image_map.get(&placement.id).cloned();
-            let Some(data) = data else {
+            let Some(data) = self.image_map.get(&placement.id) else {
                 continue;
             };
             let Some(encoded) = self.ensure_png_base64(&placement.id, data.as_slice()) else {
