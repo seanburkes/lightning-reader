@@ -44,8 +44,10 @@ impl App {
         let mut width: u16 = 60;
         let mut height: u16 = 20;
         // Use inner size for initial paginate to compute chapter_starts correctly
-        let term_size = terminal.size()?;
-        let inner = ReaderView::inner_size(term_size, width, view.two_pane);
+        let term_size = terminal
+            .size()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        let inner = ReaderView::inner_size(term_size.into(), width, view.two_pane);
         let p = reader_core::layout::paginate_with_justify(&self.blocks, inner, view.justify);
         view.pages = p.pages;
         view.chapter_starts = p.chapter_starts;
@@ -64,7 +66,7 @@ impl App {
         if !raw_ok {
             // Non-interactive fallback: draw once and exit cleanly
             let _ = terminal.draw(|f| {
-                let size = f.size();
+                let size = f.area();
                 last_frame = size;
                 height = size.height.saturating_sub(2);
                 let inner = ReaderView::inner_size(size, width, view.two_pane);
@@ -96,7 +98,7 @@ impl App {
         while !exit {
             let mut drew_view = false;
             terminal.draw(|f| {
-                let size = f.size();
+                let size = f.area();
                 last_frame = size;
                 height = size.height.saturating_sub(2);
                 // Respect configured column width; do not override with terminal width

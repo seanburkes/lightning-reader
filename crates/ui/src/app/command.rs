@@ -283,7 +283,10 @@ impl App {
         width: u16,
         last_inner: &mut (u16, u16),
     ) -> std::io::Result<()> {
-        let inner = ReaderView::inner_size(terminal.size()?, width, view.two_pane);
+        let size = terminal
+            .size()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        let inner = ReaderView::inner_size(size.into(), width, view.two_pane);
         view.reflow(&self.blocks, inner);
         *last_inner = (inner.width, inner.height);
         Ok(())
