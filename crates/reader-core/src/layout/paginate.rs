@@ -2,13 +2,13 @@ use crate::types::Block;
 use highlight;
 use std::collections::HashMap;
 
-use super::{ImagePlacement, Page, Pagination, Segment, Size, StyledLine, TextStyle};
 use super::inline::{
     clip_segments, justify_styled_line, segments_from_text_with_anchors, uppercase_segments,
     wrap_styled_text,
 };
-use super::table::render_table;
 use super::is_chapter_separator;
+use super::table::render_table;
+use super::{ImagePlacement, Page, Pagination, Segment, Size, StyledLine, TextStyle};
 
 pub fn paginate(blocks: &[Block], size: Size) -> Vec<Page> {
     paginate_with_justify(blocks, size, false).pages
